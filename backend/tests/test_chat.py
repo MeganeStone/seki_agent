@@ -1,0 +1,126 @@
+import sqlite3
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api.dependencies import get_agent_service, get_auth_service
+from app.db.sqlite import connect
+from app.main import create_app
+from app.services.agent_service import AgentService
+from app.services.auth_service import AuthService
+from app.services.rag_service import RagService
+
+
+@pytest.fixture
+def test_db(tmp_path: Path) -> sqlite3.Connection:
+    conn = connect(tmp_path / "test.db")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def client(test_db: sqlite3.Connection) -> TestClient:
+    app = create_app()
+
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_agent_service() -> AgentService:
+        def fake_answerer(question: str) -> dict:
+            return {
+                "answer": f"answer for: {question}",
+                "sources": [
+                    {
+                        "file_name": "manual.pdf",
+                        "page_number": 3,
+                        "snippet": "source snippet",
+                    }
+                ],
+            }
+
+        return AgentService(test_db, rag_service=RagService(answerer=fake_answerer))
+
+    app.dependency_overrides[get_auth_service] = override_auth_service
+    app.dependency_overrides[get_agent_service] = override_agent_service
+    return TestClient(app)
+
+
+def auth_headers(client: TestClient, test_db: sqlite3.Connection, username: str = "alice") -> dict[str, str]:
+    AuthService(test_db).create_user(username, "secret")
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": "secret"})
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_create_conversation_and_send_message(client: TestClient, test_db: sqlite3.Connection) -> None:
+    headers = auth_headers(client, test_db)
+
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    assert conv_response.status_code == 200
+    conversation_id = conv_response.json()["conversation_id"]
+
+    msg_response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"message": "什么是 TSU？", "use_knowledge_base": True},
+    )
+
+    assert msg_response.status_code == 200
+    body = msg_response.json()
+    assert body["conversation_id"] == conversation_id
+    assert body["answer"] == "answer for: 什么是 TSU？"
+    assert body["sources"] == [
+        {
+            "file_name": "manual.pdf",
+            "page_number": 3,
+            "snippet": "source snippet",
+        }
+    ]
+    assert body["route"] == "rag"
+    assert body["data"] == {
+        "sources": [
+            {
+                "file_name": "manual.pdf",
+                "page_number": 3,
+                "snippet": "source snippet",
+            }
+        ]
+    }
+
+
+def test_chat_conversations_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+    alice_headers = auth_headers(client, test_db, "alice")
+    bob_headers = auth_headers(client, test_db, "bob")
+    conv_response = client.post("/api/v1/chat/conversations", headers=alice_headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    bob_response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=bob_headers,
+        json={"message": "hello", "use_knowledge_base": True},
+    )
+
+    assert bob_response.status_code == 404
+
+
+def test_chat_requires_authentication(client: TestClient) -> None:
+    response = client.post("/api/v1/chat/conversations")
+
+    assert response.status_code == 401
+
+
+def test_chat_rejects_empty_message(client: TestClient, test_db: sqlite3.Connection) -> None:
+    headers = auth_headers(client, test_db)
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"message": "", "use_knowledge_base": True},
+    )
+
+    assert response.status_code == 422

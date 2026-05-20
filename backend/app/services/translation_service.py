@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import shutil
 import sqlite3
 import sys
@@ -9,9 +10,11 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
+from app.db.sqlite import connect
 from app.repositories.translation_repository import TranslationRepository
 from app.schemas.translation import TranslationTaskRead
 from app.services.file_service import FileService
+from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor, ThreadPoolTaskExecutor
 
 
 Translator = Callable[[str, str, str], str]
@@ -25,6 +28,8 @@ class TranslationService:
         translation_work_dir: Path | None = None,
         legacy_src_dir: Path | None = None,
         translator: Translator | None = None,
+        task_executor: TaskExecutor | None = None,
+        db_path: Path | None = None,
     ):
         settings = get_settings()
         self.conn = conn
@@ -33,7 +38,10 @@ class TranslationService:
         self.file_service = file_service or FileService(conn)
         self.translation_work_dir = translation_work_dir or settings.translation_work_dir
         self.legacy_src_dir = legacy_src_dir or settings.legacy_src_dir
+        self.db_path = db_path or settings.database_path
         self.translator = translator or self._load_legacy_translator()
+        self.uses_legacy_translator = translator is None
+        self.task_executor = task_executor or SynchronousTaskExecutor()
 
     def create_task(self, owner_username: str, file_id: str, target_language: str) -> TranslationTaskRead:
         clean_target_language = target_language.strip()
@@ -42,8 +50,36 @@ class TranslationService:
 
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, file_id, clean_target_language)
+        self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, file_id, clean_target_language))
+        return self.get_task(owner_username, task_id)
 
+    def _run_task_in_executor(self, task_id: str, owner_username: str, file_id: str, target_language: str) -> None:
+        if isinstance(self.task_executor, ThreadPoolTaskExecutor):
+            conn = connect(self.db_path)
+            try:
+                service = TranslationService(
+                    conn,
+                    file_service=FileService(conn, workspace_dir=self.file_service.workspace_dir),
+                    translation_work_dir=self.translation_work_dir,
+                    legacy_src_dir=self.legacy_src_dir,
+                    translator=self.translator,
+                    task_executor=SynchronousTaskExecutor(),
+                    db_path=self.db_path,
+                )
+                service._run_task(task_id, owner_username, file_id, target_language)
+            finally:
+                conn.close()
+            return
+
+        self._run_task(task_id, owner_username, file_id, target_language)
+
+    def _run_task(self, task_id: str, owner_username: str, file_id: str, target_language: str) -> None:
         try:
+            if self.uses_legacy_translator and not os.environ.get("TRANSLATE_API_KEY"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="TRANSLATE_API_KEY is required for translation tasks",
+                )
             source_path, source_name = self.file_service.get_file_path(owner_username, file_id)
             self._validate_document(source_name)
 
@@ -52,8 +88,8 @@ class TranslationService:
             local_source = task_workspace / source_name
             shutil.copy2(source_path, local_source)
 
-            self.translator(source_name, str(task_workspace), clean_target_language)
-            output_path = task_workspace / f"{local_source.stem}_{clean_target_language}{local_source.suffix}"
+            self.translator(source_name, str(task_workspace), target_language)
+            output_path = task_workspace / f"{local_source.stem}_{target_language}{local_source.suffix}"
             if not output_path.exists() or not output_path.is_file():
                 raise RuntimeError("Translator did not produce an output file")
 
@@ -68,13 +104,11 @@ class TranslationService:
                 status="succeeded",
                 result_file_id=result_file.id,
             )
-            return self._to_schema(row)
+            self._to_schema(row)
         except HTTPException as exc:
-            row = self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc.detail))
-            return self._to_schema(row)
+            self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc.detail))
         except Exception as exc:
-            row = self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc))
-            return self._to_schema(row)
+            self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc))
         finally:
             shutil.rmtree(self.translation_work_dir / task_id, ignore_errors=True)
 
@@ -109,15 +143,22 @@ class TranslationService:
                 detail="Only .pptx, .xlsx and .docx files are supported",
             )
 
-    @staticmethod
-    def _to_schema(row: sqlite3.Row) -> TranslationTaskRead:
+    def _to_schema(self, row: sqlite3.Row) -> TranslationTaskRead:
         return TranslationTaskRead(
             task_id=row["task_id"],
             status=row["status"],
             target_language=row["target_language"],
             result_file_id=row["result_file_id"],
+            result_filename=self._result_filename(row["owner_username"], row["result_file_id"]),
             error=row["error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
 
+    def _result_filename(self, owner_username: str, file_id: str | None) -> str | None:
+        if not file_id:
+            return None
+        try:
+            return self.file_service.get_file(owner_username, file_id).filename
+        except HTTPException:
+            return None

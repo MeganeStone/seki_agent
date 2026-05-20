@@ -1,7 +1,7 @@
 import sqlite3
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.security import decode_access_token
@@ -13,6 +13,7 @@ from app.services.diff_service import DiffService
 from app.services.file_service import FileService
 from app.services.rag_service import RagService
 from app.services.spi_service import SpiService
+from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor
 from app.services.translation_service import TranslationService
 
 
@@ -27,16 +28,29 @@ def get_file_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)
     return FileService(conn)
 
 
-def get_diff_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> DiffService:
-    return DiffService(conn)
+def get_task_executor(request: Request) -> TaskExecutor:
+    return getattr(request.app.state, "task_executor", SynchronousTaskExecutor())
 
 
-def get_spi_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> SpiService:
-    return SpiService(conn)
+def get_diff_service(
+    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
+) -> DiffService:
+    return DiffService(conn, task_executor=task_executor)
 
 
-def get_translation_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> TranslationService:
-    return TranslationService(conn)
+def get_spi_service(
+    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
+) -> SpiService:
+    return SpiService(conn, task_executor=task_executor)
+
+
+def get_translation_service(
+    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
+) -> TranslationService:
+    return TranslationService(conn, task_executor=task_executor)
 
 
 def get_rag_service() -> RagService:

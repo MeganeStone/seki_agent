@@ -13,7 +13,7 @@ class TranslationTaskRead(BaseModel):
     status: str
     target_language: str
     result_file_id: str | None = None
+    result_filename: str | None = None
     error: str | None = None
     created_at: datetime
     updated_at: datetime
-

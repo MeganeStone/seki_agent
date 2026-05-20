@@ -7,6 +7,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.db.sqlite import connect
+from app.core.config import get_settings
 from app.services.auth_service import AuthService
 
 
@@ -20,6 +21,7 @@ def main() -> None:
         user = AuthService(conn).create_user(args.username, args.password)
 
     print(f"Created or updated user: {user.username}")
+    print(f"Database: {get_settings().database_path}")
 
 
 if __name__ == "__main__":

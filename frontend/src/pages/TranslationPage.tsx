@@ -22,6 +22,13 @@ function formatDate(value: string): string {
   return date.toLocaleString()
 }
 
+function translatedDownloadName(filename: string | undefined, targetLanguage: string): string {
+  if (!filename) return `translated_${targetLanguage}`
+  const dotIndex = filename.lastIndexOf('.')
+  if (dotIndex <= 0) return `${filename}_${targetLanguage}`
+  return `${filename.slice(0, dotIndex)}_${targetLanguage}${filename.slice(dotIndex)}`
+}
+
 function TranslationPage({ accessToken }: TranslationPageProps) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [selectedFileId, setSelectedFileId] = useState('')
@@ -126,7 +133,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
     try {
       await downloadFile(accessToken, {
         id: task.result_file_id,
-        filename: `${selectedFile?.filename ?? 'translated'}_${task.target_language}`,
+        filename: task.result_filename ?? translatedDownloadName(selectedFile?.filename, task.target_language),
         size: 0,
         created_at: task.updated_at,
       })
@@ -210,6 +217,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
           fields={[
             { label: '任务 ID', value: task.task_id },
             { label: '目标语言', value: task.target_language },
+            { label: '结果文件', value: task.result_filename ?? '-' },
             { label: '更新时间', value: formatDate(task.updated_at) },
           ]}
           error={task.error}

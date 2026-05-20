@@ -3,6 +3,7 @@ import re
 import os
 from openai import OpenAI
 from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError
+from langchain_core.tools import ToolException
 # 新增：导入httpx处理客户端配置
 import httpx
 from dotenv import load_dotenv
@@ -19,6 +20,13 @@ TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY")
 # 全局客户端
 _client = None
 _translation_cache = {}
+
+def _is_valid_translation(translation: str | None, target_lang: str) -> bool:
+    if not translation or not translation.strip():
+        return False
+    if target_lang == "日语":
+        return bool(re.search(r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fffA-Za-z0-9]", translation))
+    return True
 
 def _create_client(api_key: str):
     """获取OpenAI客户端（适配DashScope兼容模式）"""
@@ -41,6 +49,8 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
     :return: 翻译结果
     """
     api_key = os.environ.get("TRANSLATE_API_KEY")  # 由上层工具设置
+    if not api_key:
+        raise ToolException("TRANSLATE_API_KEY is not configured")
     # 初始化默认上下文
     context = context or {
         "file_name": "未知文件",
@@ -113,7 +123,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
             translation = resp.choices[0].message.content.strip()
             # 过滤额外输出
             translation = re.sub(r"^[\s\u3000]*翻译结果：|^[\s\u3000]*译文：", "", translation)
-            if translation and (target_lang != "日语" or re.search(r"[\u3040-\u30ff\u31f0-\u31ff]", translation)):
+            if _is_valid_translation(translation, target_lang):
                 print(f"[翻译成功] 尝试{attempt+1}次，结果长度: {len(translation)}")
                 # 更新上下文：将本次翻译结果加入已翻译段落（供后续段落参考）
                 context["translated_segments"].append(f"原文：{text} | 译文：{translation}")
@@ -130,8 +140,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
 
     # 兜底
     if not translation or translation.strip() == "":
-        print(f"[翻译兜底] 所有重试失败，使用原文")
-        translation = text
+        raise ToolException("翻译失败：模型未返回有效译文，请检查 TRANSLATE_API_KEY 和模型配置")
     else:
         time.sleep(delay)
 

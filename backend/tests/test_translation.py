@@ -27,8 +27,14 @@ def workspace_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection, workspace_dir: Path, tmp_path: Path) -> TestClient:
+def client(
+    test_db: sqlite3.Connection,
+    workspace_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TestClient:
     app = create_app()
+    monkeypatch.setenv("TRANSLATE_API_KEY", "test-key")
 
     def override_auth_service() -> AuthService:
         return AuthService(test_db)
@@ -129,6 +135,23 @@ def test_translation_rejects_unsupported_file(client: TestClient, test_db: sqlit
     assert response.json()["error"] == "Only .pptx, .xlsx and .docx files are supported"
 
 
+def test_translation_requires_api_key(test_db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_service = FileService(test_db, workspace_dir=tmp_path / "workspace")
+    file_id = file_service.save_generated_content("alice", "demo.docx", b"doc").id
+    monkeypatch.setenv("TRANSLATE_API_KEY", "")
+
+    service = TranslationService(
+        test_db,
+        file_service=file_service,
+        translation_work_dir=tmp_path / "translation_work",
+    )
+
+    result = service.create_task("alice", file_id, "英语")
+
+    assert result.status == "failed"
+    assert result.error == "TRANSLATE_API_KEY is required for translation tasks"
+
+
 def test_translation_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
@@ -144,4 +167,3 @@ def test_translation_tasks_are_isolated_by_user(client: TestClient, test_db: sql
     bob_response = client.get(f"/api/v1/translation/tasks/{task_id}", headers=bob_headers)
 
     assert bob_response.status_code == 404
-

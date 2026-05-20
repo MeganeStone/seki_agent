@@ -15,10 +15,10 @@
 
 主要文件：
 
-- `src/multi_agent.py`：顶层 LangGraph，多 Agent 路由到主 Agent 和代码 Agent。
-- `src/tbox_doc_agent.py`：主业务 Agent，集成 RAG、翻译、web search、SPI 解析、版本比较和转交代码助手。
-- `src/tools.py`：旧 Agent 工具定义，直接操作 workspace、本地脚本和旧模块。
-- `src/rag.py`、`src/vector_db.py`：RAG 链、向量库加载、文档入库和检索。
+- `old/src/multi_agent.py`：顶层 LangGraph，多 Agent 路由到主 Agent 和代码 Agent。
+- `old/src/tbox_doc_agent.py`：主业务 Agent，集成 RAG、翻译、web search、SPI 解析、版本比较和转交代码助手。
+- `old/src/tools.py`：旧 Agent 工具定义，直接操作 workspace、本地脚本和旧模块。
+- `old/src/rag.py`、`old/src/vector_db.py`：RAG 链、向量库加载、文档入库和检索。
 
 关键风险：
 

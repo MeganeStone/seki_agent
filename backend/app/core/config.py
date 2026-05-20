@@ -1,7 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -25,6 +28,8 @@ class Settings(BaseSettings):
     rag_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     rag_model_name: str = "qwen-plus"
     agent_runner: str = "rule"
+    task_executor: str = "sync"
+    task_executor_max_workers: int = 3
     run_live_agent_tests: bool = False
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",

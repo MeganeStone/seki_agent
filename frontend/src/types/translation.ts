@@ -3,6 +3,7 @@ export type TranslationTask = {
   status: string
   target_language: string
   result_file_id: string | null
+  result_filename: string | null
   error: string | null
   created_at: string
   updated_at: string

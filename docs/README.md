@@ -14,14 +14,13 @@
 
 基于当前代码初步盘点，项目现状如下：
 
-- 主要语言：Python。
-- 当前 UI：Streamlit。
-- Agent 编排：LangGraph。
-- LLM/RAG 相关：LangChain、DashScope/OpenAI compatible API。
-- 向量库：本地 Chroma。
-- 用户存储：SQLite。
-- 文件能力：本地文档库、workspace、翻译输入输出、SPI log 解析目录。
-- 部署方式：已有 Dockerfile 和 docker-compose.yml。
+- 新框架后端：`backend/`，FastAPI 模块化单体。
+- 新框架前端：`frontend/`，React + Vite + TypeScript。
+- 工程化文档：`docs/`。
+- 旧 Streamlit/LangGraph 原型与参考依赖已集中到 `old/`。
+- 新后端仍需复用的旧能力运行时文件已复制并收敛到 `backend/legacy/`。
+- 运行数据默认位于 `data/`，不作为源码资产保留。
+- 部署方式：Docker Compose。
 
 ## 文档清单
 

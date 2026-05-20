@@ -149,7 +149,7 @@
 - Agent 对话页已支持对结构化任务结果执行后续动作：按 `route + task_id` 查询 translation/SPI/diff 任务状态，并可按 `result_file_id` 下载结果文件。
 - 已新增 `frontend` Dockerfile。
 - 已更新 `docker-compose.yml`，增加 `frontend` 服务并依赖后端健康检查。
-- 已完成旧 `src/` Agent 工具链与新后端 tool adapter 的差距梳理，并记录到 `docs/agent-migration-plan.md`。
+- 已完成旧 `old/src/` Agent 工具链与新后端 tool adapter 的差距梳理，并记录到 `docs/agent-migration-plan.md`。
 - 已新增 `FileLookupAgentTool`，通过 `FileService` 查询当前用户 workspace 文件，并将 `file_lookup` 注册到 LangChain/LangGraph 工具列表。
 - 已补充 Agent 多步工具链契约测试，覆盖 `file_lookup -> translation`、`file_lookup -> spi`、`file_lookup -> diff` 的 file_id 传递。
 - 已新增受控 live Agent 工具选择测试，使用 fake file/translation service 验证真实 LangGraph Agent 是否会先调用 `file_lookup` 再调用 `translation`；默认跳过，仅在显式配置 API key 时运行。
@@ -159,12 +159,23 @@
 - 已新增 `WebSearchAgentTool` 和 `WebSearchService` 抽象，默认使用禁用态 service，不进行外网调用；已注册为可选 LangChain/LangGraph 工具并补充单元测试。
 - 已整理 Docker 打包范围：后端镜像只复制 `backend/app`、`backend/scripts`、`backend/legacy`，不再复制旧 `src/` 原型目录；compose 不再挂载 `src/` 和根目录 `parse_spi/`。
 - 已新增 `docs/docker-deploy.md`，记录另一台电脑构建、启动、创建用户和访问方式。
+- 已完成阶段 6 第一小步：新增 `TaskExecutor` 抽象和默认 `SynchronousTaskExecutor`，translation/SPI/diff 的 `create_task` 已拆为创建任务、提交执行器和 `_run_task` 执行业务三段；当前默认同步执行，API 返回和既有测试保持兼容。
+- 已补充任务执行器测试，验证默认同步执行，以及注入延迟执行器时任务可先保持 `pending`，执行后再更新为 `succeeded`。
+- 已完成无新依赖的进程内后台线程执行器：`ThreadPoolTaskExecutor` 可通过 `SEKI_TASK_EXECUTOR=thread` 启用，`SEKI_TASK_EXECUTOR_MAX_WORKERS` 控制线程数；FastAPI lifespan 负责创建和关闭执行器。
+- 后台线程执行 translation/SPI/diff 时会重新打开数据库连接并重建 service，避免请求级连接关闭后后台任务失效。
+- 已更新 `.env.example` 和 `backend/README.md`，记录任务执行器配置。
+- 已整理项目根目录：旧原型、旧工作区数据和旧依赖文件已集中移动到 `old/`；根 `.env` 已从新框架 `.env.example` 重新生成，避免 Docker Compose 读取旧框架配置。
+- 已修复本地联调登录失败问题：根 `.env` 不能使用 Docker 的 `/app/data/...` 路径裸跑后端，已改为 Windows 项目内 `data/` 绝对路径；`create_user.py` 现在会打印实际写入的数据库路径，便于排查账号写入库和后端读取库不一致的问题。
+- 已修复工具联调问题：文件名保留中文；SPI 支持多 log 合并为一个任务/一个 Excel；任务响应返回真实 `result_filename`；后端启动时加载根 `.env` 裸变量，使旧翻译器能读取 `TRANSLATE_API_KEY`；翻译下载名修正为 `原文件名_目标语言.扩展名`。
+- 已修复 Excel 翻译覆盖不足：旧翻译器除 `sharedStrings.xml`、drawing、chart 外，已支持 `xl/worksheets/sheet*.xml` 中的 `inlineStr/str` 文本；若没有任何可翻译文本，会让任务失败而不是生成未翻译文件。
+- 已修复日语翻译时部分分组失败问题：`translate_text.py` 正确导入 `ToolException`，并且 Excel 分组翻译改为单元级容错，单个文本失败不会让整组失败。
 
 下一步计划：
 
-- 梳理旧 `src/multi_agent.py`、`src/tbox_doc_agent.py`、`src/tools.py` 与新后端 `agents/rag` 模块的迁移边界。
-- 评估是否先实现前端任务轮询，或先进入后端异步任务队列抽象。
-- 用户在本机执行 `docker compose build && docker compose up -d` 验证镜像；若通过，再进入异步任务队列抽象设计。
+- 请用户确认是否切换本地 `.env` 为 `SEKI_TASK_EXECUTOR=thread` 并做一次手工联调；若确认，可启动后端和前端，通过页面发起 translation/SPI/diff，观察创建任务后页面轮询查询状态。
+- 后续可继续完善任务体验：统一任务历史接口、任务取消/失败重试、任务进度字段更新、前端轮询节流与错误提示。
+- 若后台线程 MVP 验证通过，再进入 Redis + Celery/RQ 的生产化队列设计。
+- Docker 镜像仍建议用户在本机或另一台电脑执行 `docker compose build && docker compose up -d` 验证。
 
 Agent 主线说明：
 
@@ -227,6 +238,23 @@ Agent 测试原则：
 - 将耗时任务迁移到后台任务队列。
 - 引入任务状态查询、进度展示、失败重试。
 - 优化 Agent 会话隔离和并发安全。
+
+当前进展：
+
+- 已新增后端任务执行器边界：`backend/app/services/task_executor.py`。
+- 已提供默认 `SynchronousTaskExecutor`，不引入新依赖，不改变当前同步执行体验。
+- translation/SPI/diff service 已改为通过执行器提交任务，业务执行逻辑收敛到各自 `_run_task` 方法。
+- 已新增 `backend/tests/test_task_executor.py`，覆盖执行器契约和延迟执行场景。
+- 已新增 `ThreadPoolTaskExecutor`，支持本机进程内后台线程执行；通过配置 `SEKI_TASK_EXECUTOR=thread` 启用。
+- FastAPI lifespan 会创建执行器并在应用关闭时执行 `shutdown(wait=True)`。
+- translation/SPI/diff 后台执行路径会在线程内重新打开数据库连接，避免请求连接生命周期问题。
+- 已验证命令：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_task_executor.py backend\tests\test_translation.py backend\tests\test_spi.py backend\tests\test_diff.py backend\tests\test_agent_tools.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_health.py
+```
+
+验证结果：37 passed。
 
 ## 阶段 7：生产化部署与高可用
 

@@ -101,6 +101,46 @@ def test_create_and_get_spi_task(client: TestClient, test_db: sqlite3.Connection
     assert download_response.content == b"fake excel"
 
 
+def test_create_spi_task_accepts_multiple_logs(
+    test_db: sqlite3.Connection,
+    workspace_dir: Path,
+    tmp_path: Path,
+) -> None:
+    file_service = FileService(test_db, workspace_dir=workspace_dir)
+    first_id = file_service.save_generated_content("alice", "第一.log", b"one").id
+    second_id = file_service.save_generated_content("alice", "第二.log", b"two").id
+    seen_logs: list[str] = []
+
+    def fake_parser(task_workspace: Path, logs_dir: str, config_path: str, template_path: str) -> dict:
+        logs_path = task_workspace / logs_dir
+        seen_logs.extend(sorted(path.name for path in logs_path.glob("*.log")))
+        output_path = task_workspace / "61_67报文提取结果_20260520_195839.xlsx"
+        output_path.write_bytes(b"fake excel")
+        return {
+            "success": True,
+            "message": "ok",
+            "output_path": str(output_path),
+            "count": 2,
+            "types": ["61", "67"],
+        }
+
+    service = SpiService(
+        test_db,
+        file_service=file_service,
+        spi_work_dir=tmp_path / "spi_work",
+        parser=fake_parser,
+    )
+
+    result = service.create_task("alice", [first_id, second_id])
+
+    assert result.status == "succeeded"
+    assert result.result_file_id
+    assert seen_logs == ["第一.log", "第二.log"]
+    result_path, result_name = file_service.get_file_path("alice", result.result_file_id)
+    assert result_path.read_bytes() == b"fake excel"
+    assert result_name == "61_67报文提取结果_20260520_195839.xlsx"
+
+
 def test_spi_rejects_non_log_file(client: TestClient, test_db: sqlite3.Connection) -> None:
     headers = auth_headers(client, test_db)
     file_id = upload(client, headers, "spi.txt")
@@ -123,4 +163,3 @@ def test_spi_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Con
     bob_response = client.get(f"/api/v1/spi/tasks/{task_id}", headers=bob_headers)
 
     assert bob_response.status_code == 404
-

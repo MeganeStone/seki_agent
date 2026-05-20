@@ -23,6 +23,12 @@ class FileService:
     def list_files(self, owner_username: str) -> list[FileRead]:
         return [self._to_schema(row) for row in self.files.list_for_owner(owner_username)]
 
+    def get_file(self, owner_username: str, file_id: str) -> FileRead:
+        row = self.files.get_for_owner(file_id, owner_username)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        return self._to_schema(row)
+
     async def save_upload(self, owner_username: str, upload: UploadFile) -> FileRead:
         safe_name = self._sanitize_filename(upload.filename or "uploaded-file")
         file_id = uuid4().hex
@@ -96,7 +102,8 @@ class FileService:
     @staticmethod
     def _sanitize_filename(filename: str) -> str:
         name = Path(filename).name.strip()
-        name = re.sub(r"[^a-zA-Z0-9._ -]", "_", name)
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+        name = re.sub(r"\s+", " ", name)
         return name or "uploaded-file"
 
     @staticmethod

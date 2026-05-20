@@ -49,11 +49,11 @@ def test_upload_list_download_and_delete_file(client: TestClient, test_db: sqlit
     upload_response = client.post(
         "/api/v1/files",
         headers=headers,
-        files={"file": ("hello.txt", b"hello", "text/plain")},
+        files={"file": ("你好 文档.txt", b"hello", "text/plain")},
     )
     assert upload_response.status_code == 200
     uploaded = upload_response.json()
-    assert uploaded["filename"] == "hello.txt"
+    assert uploaded["filename"] == "你好 文档.txt"
     assert uploaded["size"] == 5
 
     list_response = client.get("/api/v1/files", headers=headers)
@@ -103,4 +103,3 @@ def test_files_require_authentication(client: TestClient) -> None:
     response = client.get("/api/v1/files")
 
     assert response.status_code == 401
-

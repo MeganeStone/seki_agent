@@ -21,7 +21,7 @@ function formatDate(value: string): string {
 
 function SpiPage({ accessToken }: SpiPageProps) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
-  const [selectedFileId, setSelectedFileId] = useState('')
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
   const [task, setTask] = useState<SpiTask | null>(null)
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -29,11 +29,11 @@ function SpiPage({ accessToken }: SpiPageProps) {
   const [error, setError] = useState('')
 
   const logFiles = useMemo(() => files.filter(isLogFile), [files])
-  const selectedFile = useMemo(
-    () => files.find((file) => file.id === selectedFileId) ?? null,
-    [files, selectedFileId],
+  const selectedFiles = useMemo(
+    () => files.filter((file) => selectedFileIds.includes(file.id)),
+    [files, selectedFileIds],
   )
-  const canCreateTask = Boolean(accessToken && selectedFileId && !submitting)
+  const canCreateTask = Boolean(accessToken && selectedFileIds.length > 0 && !submitting)
 
   const refreshFiles = useCallback(async () => {
     if (!accessToken) return
@@ -43,8 +43,8 @@ function SpiPage({ accessToken }: SpiPageProps) {
     try {
       const result = await listFiles(accessToken)
       setFiles(result.items)
-      const firstLog = result.items.find(isLogFile)
-      setSelectedFileId((current) => current || firstLog?.id || '')
+      const availableIds = result.items.filter(isLogFile).map((file) => file.id)
+      setSelectedFileIds((current) => current.filter((id) => availableIds.includes(id)))
     } catch (error) {
       setError(error instanceof Error ? error.message : '文件列表获取失败')
     } finally {
@@ -65,8 +65,8 @@ function SpiPage({ accessToken }: SpiPageProps) {
         const result = await listFiles(token)
         if (!isCurrent) return
         setFiles(result.items)
-        const firstLog = result.items.find(isLogFile)
-        setSelectedFileId((current) => current || firstLog?.id || '')
+        const availableIds = result.items.filter(isLogFile).map((file) => file.id)
+        setSelectedFileIds((current) => current.filter((id) => availableIds.includes(id)))
       } catch (error) {
         if (isCurrent) setError(error instanceof Error ? error.message : '文件列表获取失败')
       } finally {
@@ -82,12 +82,13 @@ function SpiPage({ accessToken }: SpiPageProps) {
   }, [accessToken])
 
   async function handleCreateTask() {
-    if (!accessToken || !selectedFileId) return
+    if (!accessToken || selectedFileIds.length === 0) return
 
     setSubmitting(true)
     setError('')
     try {
-      setTask(await createSpiTask(accessToken, { file_id: selectedFileId }))
+      const created = await createSpiTask(accessToken, { file_ids: selectedFileIds })
+      setTask(created)
     } catch (error) {
       setError(error instanceof Error ? error.message : 'SPI 解析任务创建失败')
     } finally {
@@ -116,7 +117,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
     try {
       await downloadFile(accessToken, {
         id: task.result_file_id,
-        filename: `${selectedFile?.filename ?? 'spi'}_result.xlsx`,
+        filename: task.result_filename ?? `${selectedFiles[0]?.filename ?? 'spi'}_result.xlsx`,
         size: 0,
         created_at: task.updated_at,
       })
@@ -154,8 +155,14 @@ function SpiPage({ accessToken }: SpiPageProps) {
       <div className="task-form compact">
         <label>
           SPI log 文件
-          <select value={selectedFileId} onChange={(event) => setSelectedFileId(event.target.value)}>
-            <option value="">请选择 .log 文件</option>
+          <select
+            multiple
+            size={Math.min(8, Math.max(3, logFiles.length))}
+            value={selectedFileIds}
+            onChange={(event) =>
+              setSelectedFileIds(Array.from(event.target.selectedOptions, (option) => option.value))
+            }
+          >
             {logFiles.map((file) => (
               <option value={file.id} key={file.id}>
                 {file.filename}
@@ -179,7 +186,8 @@ function SpiPage({ accessToken }: SpiPageProps) {
           status={task.status}
           fields={[
             { label: '任务 ID', value: task.task_id },
-            { label: '源文件', value: selectedFile?.filename ?? '-' },
+            { label: '源文件', value: selectedFiles.map((file) => file.filename).join('，') || '-' },
+            { label: '结果文件', value: task.result_filename ?? '-' },
             { label: '更新时间', value: formatDate(task.updated_at) },
           ]}
           error={task.error}

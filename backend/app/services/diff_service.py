@@ -11,9 +11,11 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
+from app.db.sqlite import connect
 from app.repositories.diff_repository import DiffRepository
 from app.schemas.diff import DiffSummary, DiffTaskRead
 from app.services.file_service import FileService
+from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor, ThreadPoolTaskExecutor
 
 
 Comparator = Callable[[Path, Path, str, str, str], str]
@@ -27,6 +29,8 @@ class DiffService:
         diff_work_dir: Path | None = None,
         legacy_src_dir: Path | None = None,
         comparator: Comparator | None = None,
+        task_executor: TaskExecutor | None = None,
+        db_path: Path | None = None,
     ):
         settings = get_settings()
         self.conn = conn
@@ -35,12 +39,37 @@ class DiffService:
         self.file_service = file_service or FileService(conn)
         self.diff_work_dir = diff_work_dir or settings.diff_work_dir
         self.legacy_src_dir = legacy_src_dir or settings.legacy_src_dir
+        self.db_path = db_path or settings.database_path
         self.comparator = comparator or self._compare_archives
+        self.task_executor = task_executor or SynchronousTaskExecutor()
 
     def create_task(self, owner_username: str, left_file_id: str, right_file_id: str) -> DiffTaskRead:
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, left_file_id, right_file_id)
+        self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, left_file_id, right_file_id))
+        return self.get_task(owner_username, task_id)
 
+    def _run_task_in_executor(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> None:
+        if isinstance(self.task_executor, ThreadPoolTaskExecutor):
+            conn = connect(self.db_path)
+            try:
+                service = DiffService(
+                    conn,
+                    file_service=FileService(conn, workspace_dir=self.file_service.workspace_dir),
+                    diff_work_dir=self.diff_work_dir,
+                    legacy_src_dir=self.legacy_src_dir,
+                    comparator=self.comparator,
+                    task_executor=SynchronousTaskExecutor(),
+                    db_path=self.db_path,
+                )
+                service._run_task(task_id, owner_username, left_file_id, right_file_id)
+            finally:
+                conn.close()
+            return
+
+        self._run_task(task_id, owner_username, left_file_id, right_file_id)
+
+    def _run_task(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> None:
         try:
             left_path, left_name = self.file_service.get_file_path(owner_username, left_file_id)
             right_path, right_name = self.file_service.get_file_path(owner_username, right_file_id)
@@ -60,23 +89,21 @@ class DiffService:
                 result_text=result_text,
                 result_file_id=result_file.id,
             )
-            return self._to_schema(row)
+            self._to_schema(row)
         except HTTPException as exc:
-            row = self.tasks.update_result(
+            self.tasks.update_result(
                 task_id,
                 owner_username,
                 status="failed",
                 error=str(exc.detail),
             )
-            return self._to_schema(row)
         except Exception as exc:
-            row = self.tasks.update_result(
+            self.tasks.update_result(
                 task_id,
                 owner_username,
                 status="failed",
                 error=str(exc),
             )
-            return self._to_schema(row)
 
     def get_task(self, owner_username: str, task_id: str) -> DiffTaskRead:
         row = self.tasks.get_for_owner(task_id, owner_username)
@@ -186,4 +213,3 @@ class DiffService:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
-

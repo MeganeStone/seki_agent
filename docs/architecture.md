@@ -70,10 +70,21 @@ Agent Tools  --->  Agent Tool Layer  --->  services/files|translation|spi|diff|r
 原则：
 
 - 前端页面不是 Agent 的替代品，而是工程化后的可视化入口和调试入口。
+- `web_search` 是 Agent 专用联网工具，不需要像 translation/SPI/diff 一样暴露为前端手动页面。
+- RAG 知识库源文件由本地维护者更新或删除，普通用户不能通过前端上传文件到 RAG 系统。
 - Agent 工具不直接读写散落的本地路径，不重复实现业务逻辑，应调用后端 service 或明确的 tool adapter。
 - 会话状态必须按 `owner_username + conversation_id` 隔离，禁止使用全局闭包变量保存多用户上下文。
 - 长耗时工具调用继续走任务化接口，Agent 只负责创建任务、查询状态和组织结果。
 - 对每个工具能力，至少保留 service 单元测试；Agent 工具层通过 mock service 测试路由和参数映射。
+
+## 3.2 Agent 工程化含义
+
+本项目中的“工程化、可测试、可替换”不是抽象口号，具体落到以下工程动作：
+
+- 工程化：将旧 Agent 中散落在 Streamlit、闭包变量和本地脚本里的能力，收敛为 FastAPI router、service、repository、tool adapter 和 runner 边界；运行配置统一进入 `.env` 和 `settings`；用户、文件、任务和会话状态落库或落到明确存储。
+- 可测试：service 层用 fake 文件、fake LLM、fake parser/translator 测试业务规则；tool adapter 用 fake service 测试参数映射；Agent runner 用 fake graph/fake model 测试工具选择和返回解析；默认测试不依赖真实 API key、LangSmith 或外网。
+- 可替换：`AgentRunner` 可以从 rule runner 切换到 LangGraph runner；web search 可以从禁用态 service 替换为真实 provider；任务执行器可以从同步执行替换为线程池、Celery 或 RQ；RAG answerer 可以 mock 或替换为新检索链，而不改上层 API。
+- 可观测：保留 LangSmith 作为真实 Agent 调试追踪手段，但不能把 LangSmith 作为单元测试通过的前提；单元测试负责确定性验证，LangSmith 负责线上/联调链路诊断。
 
 ## 4. 后端目录结构建议
 
@@ -138,6 +149,7 @@ frontend/
       TranslationPage.tsx
       SpiPage.tsx
       DiffPage.tsx
+      TasksPage.tsx
     components/
     api/
     hooks/
@@ -226,12 +238,18 @@ frontend/
 - Agent 工具注册。
 - 将文件、翻译、SPI、diff、RAG 等 service 能力暴露为 Agent 可调用工具。
 - 将自然语言意图路由到 RAG、工具调用、普通回答或后续代码助手。
+- 当任务明显需要操作代码且会占用大量上下文时，主 Agent 应通过 LangGraph 子图或 handoff 工具切换到 code agent；code agent 不提供前端独立入口。
 
 要求：
 
 - 会话状态必须按用户和会话隔离。
 - 不使用全局闭包变量保存多用户上下文。
+- 主 Agent 和 code agent 的上下文必须隔离，不能复用旧 `multi_agent.py` 中进程级闭包列表；新的隔离键至少包含 `owner_username + conversation_id + agent_name`。
 - Agent 编排层不直接实现文件解析、翻译、差分等业务逻辑。
+- code agent 的真实代码执行能力必须通过受限 `CodeExecutionService` 暴露，不能让 LLM 直接获得任意 shell 或任意文件系统权限。
+- `CodeExecutionService` 的详细设计见 `docs/code-agent-design.md`。首期只开放 `list_dir/read_text_file/write_text_file`，shell 执行后续通过命令白名单和确认流程逐步放权。
+- 主 Agent 到 code agent 的切换通过 LangGraph handoff tool 和父级 multi-agent graph 由 Agent 自主调用；外层 runner 不通过关键词硬编码猜测用户意图。
+- 外部模型 API key 的优先级为后端环境配置优先，其次使用前端请求携带的临时 key；两者都没有时返回清晰提示。临时 key 不写入数据库、任务记录或对话消息。
 - 工具调用失败时返回标准化错误，避免泄露 API Key、路径和内部异常细节。
 
 ## 7. 数据与存储
@@ -282,6 +300,13 @@ data/
 - `failed`
 - `cancelled`
 
+取消策略：
+
+- 首期采用协作式取消，不强杀 Python 线程。
+- 排队或运行中的任务收到取消请求后标记为 `cancelled`。
+- translation/SPI/diff 在任务开始和写入最终结果前检查取消状态，避免取消后继续写入成功结果。
+- 如果旧脚本或外部 API 调用已经阻塞，任务会在回到后端检查点后停止；生产化阶段可用独立 worker 进程获得更强的终止能力。
+
 后续当并发任务变多时，引入：
 
 - Redis。
@@ -306,6 +331,7 @@ data/
 - 登录后使用 token。
 - API Key 不返回前端。
 - 文件访问必须校验当前用户。
+- 文件、任务、conversation/message 查询都必须校验当前用户，禁止跨用户访问或取消任务。
 - 上传文件限制大小和扩展名。
 - 日志不打印密码、token、API Key。
 

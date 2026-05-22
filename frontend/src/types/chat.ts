@@ -17,6 +17,12 @@ export type ChatMessageResponse = {
   data: Record<string, unknown> | null
 }
 
+export type SendChatMessagePayload = {
+  message: string
+  use_knowledge_base: boolean
+  api_key?: string
+}
+
 export type ChatTurn = {
   id: string
   role: 'user' | 'assistant'
@@ -24,4 +30,6 @@ export type ChatTurn = {
   sources?: ChatSource[]
   route?: string | null
   data?: Record<string, unknown> | null
+  pendingOperation?: CodeOperation | null
 }
+import type { CodeOperation } from './codeOperations'

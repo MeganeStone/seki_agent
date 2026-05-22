@@ -8,6 +8,7 @@ from app.api.dependencies import get_agent_service, get_auth_service
 from app.db.sqlite import connect
 from app.main import create_app
 from app.services.agent_service import AgentService
+from app.services.agent_runner import AgentRequest, AgentResponse
 from app.services.auth_service import AuthService
 from app.services.rag_service import RagService
 
@@ -124,3 +125,35 @@ def test_chat_rejects_empty_message(client: TestClient, test_db: sqlite3.Connect
     )
 
     assert response.status_code == 422
+
+
+def test_chat_accepts_request_api_key(test_db: sqlite3.Connection) -> None:
+    app = create_app()
+    seen_requests: list[AgentRequest] = []
+
+    class RecordingRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            seen_requests.append(request)
+            return AgentResponse(answer="ok", route="direct")
+
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_agent_service() -> AgentService:
+        return AgentService(test_db, runner=RecordingRunner())
+
+    app.dependency_overrides[get_auth_service] = override_auth_service
+    app.dependency_overrides[get_agent_service] = override_agent_service
+    client = TestClient(app)
+    headers = auth_headers(client, test_db)
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"message": "hello", "use_knowledge_base": True, "api_key": "request-key"},
+    )
+
+    assert response.status_code == 200
+    assert seen_requests[0].api_key == "request-key"

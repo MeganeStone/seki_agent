@@ -15,6 +15,11 @@ class RagAnswerService(Protocol):
         ...
 
 
+class ChatAnswerService(Protocol):
+    def answer(self, message: str, api_key: str | None = None) -> dict:
+        ...
+
+
 class TranslationTaskService(Protocol):
     def create_task(self, owner_username: str, file_id: str, target_language: str):
         ...
@@ -49,6 +54,15 @@ class RagAgentTool:
         sources = result.get("sources", [])
         content = str(result.get("answer", ""))
         return AgentToolResult(content=content, data={"sources": sources})
+
+
+class ChatAgentTool:
+    def __init__(self, chat_service: ChatAnswerService):
+        self.chat_service = chat_service
+
+    def __call__(self, message: str, api_key: str | None = None) -> AgentToolResult:
+        result = self.chat_service.answer(message, api_key=api_key)
+        return AgentToolResult(content=str(result.get("answer", "")), data={"sources": result.get("sources", [])})
 
 
 class WebSearchAgentTool:

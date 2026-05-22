@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from app.db.sqlite import connect
 from app.services.agent_runner import AgentRequest, AgentResponse
 from app.services.agent_service import AgentService
+from app.services.chat_model_service import ChatModelService
 from app.services.rag_service import RagService
 
 
@@ -59,6 +60,33 @@ def test_agent_service_conversations_are_owner_isolated(test_db: sqlite3.Connect
     assert exc_info.value.status_code == 404
 
 
+def test_agent_service_creates_pending_operation_from_runner_data(test_db: sqlite3.Connection) -> None:
+    class PendingRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer="删除 existing.txt 需要确认。",
+                route="code_agent",
+                data={
+                    "requires_confirmation": True,
+                    "operation_type": "delete_path",
+                    "agent_name": "code_agent",
+                    "path": "existing.txt",
+                    "recursive": False,
+                },
+            )
+
+    service = AgentService(test_db, runner=PendingRunner())
+    conversation = service.create_conversation("alice")
+
+    response = service.ask("alice", conversation.conversation_id, "delete existing.txt")
+
+    assert response.data is not None
+    pending = response.data["pending_operation"]
+    assert pending["status"] == "pending"
+    assert pending["operation_type"] == "delete_path"
+    assert pending["payload"]["path"] == "existing.txt"
+
+
 class FakeRunner:
     def __init__(self) -> None:
         self.requests: list[AgentRequest] = []
@@ -89,8 +117,43 @@ def test_agent_service_can_inject_runner_boundary(test_db: sqlite3.Connection) -
             conversation_id=conversation.conversation_id,
             message="hello",
             use_knowledge_base=False,
+            agent_name="main_agent",
+            api_key=None,
         )
     ]
+
+
+def test_agent_service_passes_request_api_key_to_runner(test_db: sqlite3.Connection) -> None:
+    runner = FakeRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "hello", api_key="request-key")
+
+    assert runner.requests[0].api_key == "request-key"
+
+
+def test_agent_service_default_runner_can_chat_without_knowledge_base(test_db: sqlite3.Connection, monkeypatch) -> None:
+    from app.services import agent_runner_factory
+
+    class FakeChatModelService:
+        def answer(self, message: str, api_key: str | None = None) -> dict:
+            return {"answer": f"chat answer: {message}:{api_key}", "sources": []}
+
+    monkeypatch.setattr(agent_runner_factory, "ChatModelService", lambda: FakeChatModelService())
+    service = AgentService(test_db, rag_service=RagService(answerer=lambda question: "rag"))
+    conversation = service.create_conversation("alice")
+
+    response = service.ask(
+        "alice",
+        conversation.conversation_id,
+        "hello",
+        use_knowledge_base=False,
+        api_key="request-key",
+    )
+
+    assert response.route == "direct"
+    assert response.answer == "chat answer: hello:request-key"
 
 
 class FakeTask:
@@ -104,10 +167,16 @@ class FakeTask:
 
 class FakeTranslationService:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, str | None]] = []
 
-    def create_task(self, owner_username: str, file_id: str, target_language: str) -> FakeTask:
-        self.calls.append((owner_username, file_id, target_language))
+    def create_task(
+        self,
+        owner_username: str,
+        file_id: str,
+        target_language: str,
+        api_key: str | None = None,
+    ) -> FakeTask:
+        self.calls.append((owner_username, file_id, target_language, api_key))
         return FakeTask("translation-task")
 
 
@@ -152,7 +221,7 @@ def test_agent_service_default_runner_can_route_translation_tool(test_db: sqlite
         "result_file_id": "result-file",
         "error": None,
     }
-    assert translation_service.calls == [("alice", "file-1", "英语")]
+    assert translation_service.calls == [("alice", "file-1", "英语", None)]
 
 
 def test_agent_service_default_runner_can_route_spi_tool(test_db: sqlite3.Connection) -> None:

@@ -1,5 +1,5 @@
 import { API_BASE_URL } from './client'
-import type { ChatMessageResponse, ConversationCreateResponse } from '../types/chat'
+import type { ChatMessageResponse, ConversationCreateResponse, SendChatMessagePayload } from '../types/chat'
 
 function authHeaders(accessToken: string): HeadersInit {
   return {
@@ -36,16 +36,12 @@ export async function createConversation(accessToken: string): Promise<Conversat
 export async function sendChatMessage(
   accessToken: string,
   conversationId: string,
-  message: string,
-  useKnowledgeBase: boolean,
+  payload: SendChatMessagePayload,
 ): Promise<ChatMessageResponse> {
   const response = await fetch(`${API_BASE_URL}/chat/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: authHeaders(accessToken),
-    body: JSON.stringify({
-      message,
-      use_knowledge_base: useKnowledgeBase,
-    }),
+    body: JSON.stringify(payload),
   })
 
   if (!response.ok) {

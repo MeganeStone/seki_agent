@@ -1,4 +1,5 @@
 import sqlite3
+import os
 from pathlib import Path
 
 import pytest
@@ -149,7 +150,39 @@ def test_translation_requires_api_key(test_db: sqlite3.Connection, tmp_path: Pat
     result = service.create_task("alice", file_id, "英语")
 
     assert result.status == "failed"
-    assert result.error == "TRANSLATE_API_KEY is required for translation tasks"
+    assert result.error == "请先配置翻译 API key，或在前端输入临时 API key。"
+
+
+def test_translation_accepts_request_api_key_when_env_is_missing(
+    test_db: sqlite3.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_service = FileService(test_db, workspace_dir=tmp_path / "workspace")
+    file_id = file_service.save_generated_content("alice", "demo.docx", b"doc").id
+    monkeypatch.delenv("TRANSLATE_API_KEY", raising=False)
+    seen_api_keys: list[str | None] = []
+
+    def fake_translator(file_name: str, workspace_dir: str, target_language: str) -> str:
+        seen_api_keys.append(os.environ.get("TRANSLATE_API_KEY"))
+        source = Path(workspace_dir) / file_name
+        output = Path(workspace_dir) / f"{source.stem}_{target_language}{source.suffix}"
+        output.write_bytes(b"translated")
+        return "ok"
+
+    service = TranslationService(
+        test_db,
+        file_service=file_service,
+        translation_work_dir=tmp_path / "translation_work",
+        translator=fake_translator,
+    )
+    service.uses_legacy_translator = True
+
+    result = service.create_task("alice", file_id, "英语", api_key="request-key")
+
+    assert result.status == "succeeded"
+    assert seen_api_keys == ["request-key"]
+    assert "TRANSLATE_API_KEY" not in os.environ
 
 
 def test_translation_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:

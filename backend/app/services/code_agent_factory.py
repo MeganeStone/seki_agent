@@ -1,0 +1,82 @@
+from collections.abc import Callable
+
+from app.core.config import Settings
+from app.services.agent_handoff_tools import create_transfer_to_main_agent_tool
+from app.services.code_agent_tools import CodeAgentFileTool
+from app.services.code_langchain_tool_adapter import create_code_langchain_tools
+from app.services.code_operation_service import CodeOperationService
+
+
+CODE_AGENT_SYSTEM_PROMPT = """
+你是 code_agent，一个受限的本地代码助手。你可以帮助用户查看项目文件、编写小型文本文件、整理脚本草稿和解释代码。
+
+当前可用工具：
+- code_list_dir：列出允许工作目录内的文件。
+- code_create_dir：创建允许工作目录内的新目录。
+- code_read_text_file：读取允许工作目录内的小型 UTF-8 文本文件。
+- code_write_text_file：写入允许工作目录内的 UTF-8 文本文件，默认不覆盖已有文件。
+- code_run_python_script：运行允许工作目录内已存在的 .py 脚本。
+- code_run_allowed_command：运行白名单中的命令，如 pytest、npm run lint/build、git status/diff。
+- code_delete_path：删除 code agent 本次运行创建的文件或目录；其他文件只会返回需要确认。
+- transfer_to_main_agent：当用户问题不需要代码/文件操作时，交还给主 Agent。
+
+安全规则：
+1. 当前阶段不能执行任意 shell，不能移动文件。
+2. 只能通过 code_run_python_script 运行允许目录内的 .py 脚本；不要声称运行了 shell 命令。
+3. 可以直接删除 code agent 本次运行创建的文件或目录；其他既有文件必须先返回给用户确认，不要绕过确认。
+4. 运行命令必须使用 code_run_allowed_command，并拆成 command + 参数列表；不要构造任意 shell 字符串。
+5. 写文件前先确认路径和内容；覆盖已有文件必须显式使用 overwrite=true。
+6. 如果工具拒绝访问敏感文件、越界路径或危险命令，直接向用户说明限制，不要尝试绕过。
+7. 任务不涉及代码、脚本或本地文件时，调用 transfer_to_main_agent。
+8. 回答语言与用户保持一致，说明实际完成的操作和生成/删除的文件路径。
+"""
+
+
+def create_code_langgraph_agent(
+    settings: Settings,
+    code_file_tool: CodeAgentFileTool,
+    owner_username: str,
+    conversation_id: str,
+    main_agent_name: str = "main_agent",
+    code_agent_name: str = "code_agent",
+    model_factory: Callable[[], object] | None = None,
+    checkpointer_factory: Callable[[], object] | None = None,
+    operation_service: CodeOperationService | None = None,
+):
+    """Create the restricted LangGraph-backed code agent graph."""
+
+    from langchain.agents import create_agent
+    from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    if model_factory is None:
+        if not settings.rag_api_key:
+            raise ValueError("SEKI_RAG_API_KEY is required for code agent model")
+
+        def model_factory() -> ChatOpenAI:
+            return ChatOpenAI(
+                model=settings.rag_model_name,
+                temperature=0.1,
+                api_key=settings.rag_api_key,
+                base_url=settings.rag_base_url,
+                timeout=300,
+            )
+
+    if checkpointer_factory is None:
+        checkpointer_factory = InMemorySaver
+
+    tools = create_code_langchain_tools(
+        file_tool=code_file_tool,
+        owner_username=owner_username,
+        conversation_id=conversation_id,
+        agent_name=code_agent_name,
+        operation_service=operation_service,
+    )
+    tools.append(create_transfer_to_main_agent_tool(main_agent_name=main_agent_name))
+
+    return create_agent(
+        model=model_factory(),
+        tools=tools,
+        system_prompt=CODE_AGENT_SYSTEM_PROMPT,
+        checkpointer=checkpointer_factory(),
+    )

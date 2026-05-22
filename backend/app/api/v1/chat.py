@@ -31,4 +31,5 @@ def create_message(
         conversation_id,
         payload.message,
         use_knowledge_base=payload.use_knowledge_base,
+        api_key=payload.api_key,
     )

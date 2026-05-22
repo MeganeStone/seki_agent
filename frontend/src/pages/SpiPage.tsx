@@ -9,6 +9,8 @@ type SpiPageProps = {
   accessToken: string | null
 }
 
+const LAST_TASK_STORAGE_KEY = 'seki_last_spi_task'
+
 function isLogFile(file: WorkspaceFile): boolean {
   return file.filename.toLowerCase().endsWith('.log')
 }
@@ -19,10 +21,34 @@ function formatDate(value: string): string {
   return date.toLocaleString()
 }
 
+function readCachedTask(): SpiTask | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as SpiTask
+  } catch {
+    return null
+  }
+}
+
+function persistTask(task: SpiTask | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (task) {
+      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+    } else {
+      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 function SpiPage({ accessToken }: SpiPageProps) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
-  const [task, setTask] = useState<SpiTask | null>(null)
+  const [task, setTask] = useState<SpiTask | null>(() => readCachedTask())
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -57,6 +83,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
 
     let isCurrent = true
     const token = accessToken
+    const cachedTask = readCachedTask()
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -76,6 +103,21 @@ function SpiPage({ accessToken }: SpiPageProps) {
 
     void loadFiles()
 
+    if (cachedTask) {
+      void (async () => {
+        try {
+          const latestTask = await getSpiTask(token, cachedTask.task_id)
+          if (!isCurrent) return
+          setTask(latestTask)
+          persistTask(latestTask)
+        } catch {
+          if (isCurrent) {
+            persistTask(null)
+          }
+        }
+      })()
+    }
+
     return () => {
       isCurrent = false
     }
@@ -89,6 +131,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
     try {
       const created = await createSpiTask(accessToken, { file_ids: selectedFileIds })
       setTask(created)
+      persistTask(created)
     } catch (error) {
       setError(error instanceof Error ? error.message : 'SPI 解析任务创建失败')
     } finally {
@@ -102,7 +145,9 @@ function SpiPage({ accessToken }: SpiPageProps) {
     setRefreshingTask(true)
     setError('')
     try {
-      setTask(await getSpiTask(accessToken, task.task_id))
+      const refreshed = await getSpiTask(accessToken, task.task_id)
+      setTask(refreshed)
+      persistTask(refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : 'SPI 解析任务查询失败')
     } finally {

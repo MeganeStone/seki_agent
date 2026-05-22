@@ -71,12 +71,17 @@ class DiffService:
 
     def _run_task(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> None:
         try:
+            if self._is_cancelled(task_id, owner_username):
+                return
+            self.tasks.update_result(task_id, owner_username, status="running")
             left_path, left_name = self.file_service.get_file_path(owner_username, left_file_id)
             right_path, right_name = self.file_service.get_file_path(owner_username, right_file_id)
             self._validate_archive(left_name)
             self._validate_archive(right_name)
 
             result_text = self.comparator(left_path, right_path, left_name, right_name, task_id)
+            if self._is_cancelled(task_id, owner_username):
+                return
             result_file = self.file_service.save_generated_content(
                 owner_username,
                 f"diff_{task_id}.txt",
@@ -91,6 +96,8 @@ class DiffService:
             )
             self._to_schema(row)
         except HTTPException as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(
                 task_id,
                 owner_username,
@@ -98,6 +105,8 @@ class DiffService:
                 error=str(exc.detail),
             )
         except Exception as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(
                 task_id,
                 owner_username,
@@ -213,3 +222,7 @@ class DiffService:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def _is_cancelled(self, task_id: str, owner_username: str) -> bool:
+        row = self.tasks.get_for_owner(task_id, owner_username)
+        return row is not None and row["status"] == "cancelled"

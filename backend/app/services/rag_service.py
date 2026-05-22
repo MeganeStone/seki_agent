@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, status
 
+from app.core.api_keys import temporary_env_api_key
 from app.core.config import get_settings
 from app.schemas.chat import ChatSource
 
@@ -27,16 +28,17 @@ class RagService:
         self,
         message: str,
         use_knowledge_base: bool = True,
+        api_key: str | None = None,
     ) -> dict:
         clean_message = message.strip()
         if not clean_message:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message is required")
 
         if use_knowledge_base:
-            return self._answer_with_rag(clean_message)
+            return self._answer_with_rag(clean_message, api_key=api_key)
         return {"answer": "知识库已禁用，当前接口仅提供知识库问答。", "sources": []}
 
-    def _answer_with_rag(self, question: str) -> dict:
+    def _answer_with_rag(self, question: str, api_key: str | None = None) -> dict:
         if self.answerer is not None:
             result = self.answerer(question)
             if isinstance(result, str):
@@ -47,15 +49,17 @@ class RagService:
             }
 
         settings = get_settings()
-        if not settings.rag_api_key:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="RAG API key is not configured")
+        effective_api_key = settings.rag_api_key or api_key
+        if not effective_api_key:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="请先配置 RAG API key，或在前端输入临时 API key。")
 
-        rag_module, vector_db_module = self._load_legacy_modules()
-        if self._qa_chain is None:
-            vector_db = vector_db_module.get_vector_db(settings.rag_api_key)
-            self._qa_chain = rag_module.build_qa_chain(vector_db, settings.rag_api_key)
+        with temporary_env_api_key("SEKI_RAG_API_KEY", api_key):
+            rag_module, vector_db_module = self._load_legacy_modules()
+            if self._qa_chain is None:
+                vector_db = vector_db_module.get_vector_db(effective_api_key)
+                self._qa_chain = rag_module.build_qa_chain(vector_db, effective_api_key)
 
-        answer = rag_module.rag_qa_chain(question, self._qa_chain)
+            answer = rag_module.rag_qa_chain(question, self._qa_chain)
         return {"answer": answer, "sources": []}
 
     def _load_legacy_modules(self):

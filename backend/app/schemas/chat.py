@@ -11,6 +11,7 @@ class ConversationCreateResponse(BaseModel):
 class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1)
     use_knowledge_base: bool = True
+    api_key: str | None = None
 
 
 class ChatSource(BaseModel):

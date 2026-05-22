@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     data_dir: Path = project_root / "data"
     database_path: Path = data_dir / "db" / "seki_agent.db"
     workspace_dir: Path = data_dir / "workspace"
+    skills_dir: Path = data_dir / "skills"
     diff_work_dir: Path = data_dir / "diff_work"
     spi_work_dir: Path = data_dir / "spi_work"
     translation_work_dir: Path = data_dir / "translation_work"
@@ -28,8 +29,14 @@ class Settings(BaseSettings):
     rag_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     rag_model_name: str = "qwen-plus"
     agent_runner: str = "rule"
+    agent_enable_keyword_handoff: bool = False
     task_executor: str = "sync"
     task_executor_max_workers: int = 3
+    code_agent_allowed_roots: list[Path] | None = None
+    code_agent_max_read_bytes: int = 1024 * 1024
+    code_agent_max_write_bytes: int = 1024 * 1024
+    code_agent_allowed_command_prefixes: list[str] = []
+    code_agent_confirmed_command_prefixes: list[str] = []
     run_live_agent_tests: bool = False
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",

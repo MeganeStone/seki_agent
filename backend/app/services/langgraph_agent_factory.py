@@ -10,6 +10,7 @@ from app.services.agent_tools import (
     TranslationAgentTool,
     WebSearchAgentTool,
 )
+from app.services.agent_handoff_tools import create_transfer_to_code_agent_tool
 from app.services.langchain_tool_adapter import create_langchain_tools
 
 
@@ -24,6 +25,8 @@ def create_tbox_langgraph_agent(
     diff_tool: DiffAgentTool | None = None,
     model_factory: Callable[[], object] | None = None,
     checkpointer_factory: Callable[[], object] | None = None,
+    include_code_handoff_tool: bool = True,
+    code_agent_name: str = "code_agent",
 ):
     """Create the LangGraph-backed TBOX agent graph.
 
@@ -60,6 +63,8 @@ def create_tbox_langgraph_agent(
         diff_tool=diff_tool,
         owner_username=owner_username,
     )
+    if include_code_handoff_tool:
+        tools.append(create_transfer_to_code_agent_tool(code_agent_name=code_agent_name))
 
     return create_agent(
         model=model_factory(),

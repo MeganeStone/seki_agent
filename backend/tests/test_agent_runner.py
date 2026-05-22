@@ -1,4 +1,4 @@
-from app.services.agent_runner import AgentRequest, RuleBasedAgentRunner
+from app.services.agent_runner import AgentRequest, AgentResponse, HandoffAgentRunner, RuleBasedAgentRunner
 from app.services.agent_tools import AgentToolResult
 
 
@@ -9,6 +9,15 @@ class FakeRagTool:
     def __call__(self, question: str) -> AgentToolResult:
         self.calls.append(question)
         return AgentToolResult(content=f"rag: {question}", data={"sources": [{"file_name": "manual.pdf"}]})
+
+
+class FakeChatTool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    def __call__(self, message: str, api_key: str | None = None) -> AgentToolResult:
+        self.calls.append((message, api_key))
+        return AgentToolResult(content=f"chat: {message}", data={"sources": []})
 
 
 class FakeTranslationTool:
@@ -36,6 +45,16 @@ class FakeDiffTool:
     def __call__(self, owner_username: str, left_file_id: str, right_file_id: str) -> AgentToolResult:
         self.calls.append((owner_username, left_file_id, right_file_id))
         return AgentToolResult(content="diff created", data={"task_id": "diff-task"})
+
+
+class RecordingRunner:
+    def __init__(self, route: str) -> None:
+        self.route = route
+        self.requests: list[AgentRequest] = []
+
+    def run(self, request: AgentRequest) -> AgentResponse:
+        self.requests.append(request)
+        return AgentResponse(answer=f"{self.route}: {request.message}", route=self.route)
 
 
 def request(message: str, use_knowledge_base: bool = True) -> AgentRequest:
@@ -97,3 +116,112 @@ def test_rule_runner_returns_direct_message_when_knowledge_base_disabled() -> No
 
     assert response.route == "direct"
     assert "未配置普通聊天模型" in response.answer
+
+
+def test_rule_runner_uses_chat_tool_when_knowledge_base_disabled() -> None:
+    chat_tool = FakeChatTool()
+    runner = RuleBasedAgentRunner(rag_tool=FakeRagTool(), chat_tool=chat_tool)
+
+    response = runner.run(
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="hello",
+            use_knowledge_base=False,
+            api_key="request-key",
+        )
+    )
+
+    assert response.route == "direct"
+    assert response.answer == "chat: hello"
+    assert chat_tool.calls == [("hello", "request-key")]
+
+
+def test_handoff_runner_routes_code_tasks_to_isolated_code_agent() -> None:
+    main_runner = RecordingRunner("main")
+    code_runner = RecordingRunner("code_agent")
+    runner = HandoffAgentRunner(main_runner=main_runner, code_runner=code_runner, enable_keyword_routing=True)
+
+    response = runner.run(request("帮我写一个 Python 脚本处理日志"))
+
+    assert response.route == "code_agent"
+    assert main_runner.requests == []
+    assert code_runner.requests == [
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="帮我写一个 Python 脚本处理日志",
+            use_knowledge_base=True,
+            agent_name="code_agent",
+            api_key=None,
+        )
+    ]
+
+
+def test_handoff_runner_keyword_routing_stays_opt_in() -> None:
+    main_runner = RecordingRunner("main")
+    code_runner = RecordingRunner("code_agent")
+    runner = HandoffAgentRunner(main_runner=main_runner, code_runner=code_runner)
+
+    response = runner.run(request("帮我写一个 Python 脚本"))
+
+    assert response.route == "main"
+    assert code_runner.requests == []
+
+
+def test_handoff_runner_does_not_guess_code_tasks_by_default() -> None:
+    main_runner = RecordingRunner("main")
+    code_runner = RecordingRunner("code_agent")
+    runner = HandoffAgentRunner(main_runner=main_runner, code_runner=code_runner)
+
+    response = runner.run(request("帮我写一个 Python 脚本处理日志"))
+
+    assert response.route == "main"
+    assert code_runner.requests == []
+    assert main_runner.requests[0].agent_name == "main_agent"
+
+
+def test_handoff_runner_routes_regular_tasks_to_main_agent() -> None:
+    main_runner = RecordingRunner("main")
+    code_runner = RecordingRunner("code_agent")
+    runner = HandoffAgentRunner(main_runner=main_runner, code_runner=code_runner)
+
+    response = runner.run(request("什么是 TSU？"))
+
+    assert response.route == "main"
+    assert code_runner.requests == []
+    assert main_runner.requests[0].agent_name == "main_agent"
+
+
+def test_handoff_runner_honors_existing_code_agent_context() -> None:
+    main_runner = RecordingRunner("main")
+    code_runner = RecordingRunner("code_agent")
+    runner = HandoffAgentRunner(main_runner=main_runner, code_runner=code_runner)
+
+    response = runner.run(
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="继续",
+            agent_name="code_agent",
+        )
+    )
+
+    assert response.route == "code_agent"
+    assert code_runner.requests[0].agent_name == "code_agent"
+
+
+def test_agent_request_can_carry_user_api_key_without_changing_default_fields() -> None:
+    req = request("hello")
+
+    assert req.api_key is None
+
+    req_with_key = AgentRequest(
+        owner_username="alice",
+        conversation_id="conv-1",
+        message="hello",
+        api_key="user-key",
+    )
+
+    assert req_with_key.agent_name == "main_agent"
+    assert req_with_key.api_key == "user-key"

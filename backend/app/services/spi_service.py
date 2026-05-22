@@ -73,6 +73,9 @@ class SpiService:
 
     def _run_task(self, task_id: str, owner_username: str, file_ids: list[str]) -> None:
         try:
+            if self._is_cancelled(task_id, owner_username):
+                return
+            self.tasks.update_result(task_id, owner_username, status="running")
             task_workspace = self.spi_work_dir / task_id
             logs_dir = task_workspace / "parse_spi" / "logs"
             logs_dir.mkdir(parents=True, exist_ok=True)
@@ -96,6 +99,8 @@ class SpiService:
             if not output_path.exists() or not output_path.is_file():
                 raise RuntimeError("SPI parser did not produce an Excel file")
 
+            if self._is_cancelled(task_id, owner_username):
+                return
             result_file = self.file_service.save_generated_content(
                 owner_username,
                 output_path.name,
@@ -109,8 +114,12 @@ class SpiService:
             )
             self._to_schema(row)
         except HTTPException as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc.detail))
         except Exception as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc))
         finally:
             shutil.rmtree(self.spi_work_dir / task_id, ignore_errors=True)
@@ -167,3 +176,7 @@ class SpiService:
             return self.file_service.get_file(owner_username, file_id).filename
         except HTTPException:
             return None
+
+    def _is_cancelled(self, task_id: str, owner_username: str) -> bool:
+        row = self.tasks.get_for_owner(task_id, owner_username)
+        return row is not None and row["status"] == "cancelled"

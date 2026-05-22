@@ -70,6 +70,19 @@ class DiffRepository:
             raise RuntimeError("Diff task disappeared")
         return row
 
+    def cancel_for_owner(self, task_id: str, owner_username: str) -> sqlite3.Row | None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            UPDATE diff_tasks
+            SET status = ?, error = NULL, updated_at = ?
+            WHERE task_id = ? AND owner_username = ? AND status IN ('pending', 'running')
+            """,
+            ("cancelled", now, task_id, owner_username),
+        )
+        self.conn.commit()
+        return self.get_for_owner(task_id, owner_username)
+
     def get_for_owner(self, task_id: str, owner_username: str) -> sqlite3.Row | None:
         cursor = self.conn.execute(
             """
@@ -82,3 +95,16 @@ class DiffRepository:
         )
         return cursor.fetchone()
 
+    def list_for_owner(self, owner_username: str, limit: int = 50) -> list[sqlite3.Row]:
+        cursor = self.conn.execute(
+            """
+            SELECT task_id, owner_username, left_file_id, right_file_id, status,
+                   result_text, result_file_id, error, created_at, updated_at
+            FROM diff_tasks
+            WHERE owner_username = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (owner_username, limit),
+        )
+        return list(cursor.fetchall())

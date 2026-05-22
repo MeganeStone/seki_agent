@@ -86,6 +86,42 @@ def test_translation_service_can_defer_task_execution(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_cancelled_deferred_translation_does_not_run(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "test.db")
+    try:
+        file_service = FileService(conn, workspace_dir=tmp_path / "workspace")
+        source = file_service.save_generated_content("alice", "demo.docx", b"source")
+        executor = DeferredTaskExecutor()
+        calls: list[str] = []
+
+        def fake_translator(file_name: str, workspace_dir: str, target_language: str) -> str:
+            calls.append(file_name)
+            source_path = Path(workspace_dir) / file_name
+            output_path = Path(workspace_dir) / f"{source_path.stem}_{target_language}{source_path.suffix}"
+            output_path.write_bytes(b"translated")
+            return str(output_path)
+
+        service = TranslationService(
+            conn,
+            file_service=file_service,
+            translation_work_dir=tmp_path / "translation_work",
+            translator=fake_translator,
+            task_executor=executor,
+        )
+
+        created = service.create_task("alice", source.id, "英语")
+        service.tasks.cancel_for_owner(created.task_id, "alice")
+
+        executor.run_all()
+        cancelled = service.get_task("alice", created.task_id)
+
+        assert cancelled.status == "cancelled"
+        assert cancelled.result_file_id is None
+        assert calls == []
+    finally:
+        conn.close()
+
+
 def test_translation_service_runs_with_thread_pool_executor(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     conn = connect(db_path)

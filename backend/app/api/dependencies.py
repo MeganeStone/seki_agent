@@ -9,11 +9,13 @@ from app.db.sqlite import get_connection
 from app.schemas.auth import UserRead
 from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
+from app.services.code_operation_service import CodeOperationService
 from app.services.diff_service import DiffService
 from app.services.file_service import FileService
 from app.services.rag_service import RagService
 from app.services.spi_service import SpiService
 from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor
+from app.services.task_service import TaskService
 from app.services.translation_service import TranslationService
 
 
@@ -26,6 +28,16 @@ def get_auth_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)
 
 def get_file_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> FileService:
     return FileService(conn)
+
+
+def get_task_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> TaskService:
+    return TaskService(conn)
+
+
+def get_code_operation_service(
+    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+) -> CodeOperationService:
+    return CodeOperationService(conn)
 
 
 def get_task_executor(request: Request) -> TaskExecutor:

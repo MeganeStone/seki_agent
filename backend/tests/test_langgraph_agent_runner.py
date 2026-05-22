@@ -1,7 +1,8 @@
 import pytest
 import importlib.util
+import os
 
-from app.services.agent_runner import AgentRequest
+from app.services.agent_runner import AgentRequest, HandoffAgentRunner
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.agent_tools import RagAgentTool
 from app.services.langgraph_agent_runner import (
@@ -62,13 +63,32 @@ def test_langgraph_runner_invokes_injected_graph_factory() -> None:
     assert response.route == "langgraph"
     assert graph.payloads[0]["owner_username"] == "alice"
     assert graph.payloads[0]["conversation_id"] == "conv-1"
+    assert graph.payloads[0]["agent_name"] == "main_agent"
+    assert "api_key" not in graph.payloads[0]
     assert graph.payloads[0]["messages"] == [{"role": "user", "content": "hello"}]
     assert graph.configs[0] == {
         "configurable": {
-            "thread_id": "alice:conv-1",
+            "thread_id": "alice:conv-1:main_agent",
             "checkpoint_ns": "seki-agent",
         }
     }
+
+
+def test_langgraph_runner_uses_agent_name_for_context_isolation() -> None:
+    graph = FakeGraph()
+    runner = LangGraphAgentRunner(graph_factory=lambda: graph)
+
+    runner.run(
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="write code",
+            agent_name="code_agent",
+        )
+    )
+
+    assert graph.configs[0]["configurable"]["thread_id"] == "alice:conv-1:code_agent"
+    assert graph.payloads[0]["agent_name"] == "code_agent"
 
 
 def test_langgraph_runner_can_build_graph_from_request_context() -> None:
@@ -93,6 +113,46 @@ def test_langgraph_runner_can_build_graph_from_request_context() -> None:
     assert response.answer == "graph answer: hello"
     assert set(graphs) == {"alice"}
     assert graphs["alice"].payloads[0]["owner_username"] == "alice"
+
+
+def test_langgraph_runner_includes_agent_state_metadata_in_data() -> None:
+    response = LangGraphAgentRunner._to_response(
+        {
+            "answer": "code boundary",
+            "route": "code_agent",
+            "agent_name": "code_agent",
+            "active_agent": "code_agent",
+        }
+    )
+
+    assert response.data == {
+        "agent_name": "code_agent",
+        "active_agent": "code_agent",
+    }
+
+
+def test_langgraph_runner_uses_request_api_key_temporarily_when_env_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("SEKI_RAG_API_KEY", raising=False)
+    seen_api_keys: list[str | None] = []
+
+    class KeyReadingGraph:
+        def invoke(self, payload: dict, config: dict | None = None) -> dict:
+            seen_api_keys.append(os.environ.get("SEKI_RAG_API_KEY"))
+            return {"answer": "ok"}
+
+    runner = LangGraphAgentRunner(graph_factory=KeyReadingGraph)
+
+    runner.run(
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="hello",
+            api_key="request-key",
+        )
+    )
+
+    assert seen_api_keys == ["request-key"]
+    assert "SEKI_RAG_API_KEY" not in os.environ
 
 
 def test_langgraph_runner_extracts_answer_from_messages_result() -> None:
@@ -136,7 +196,8 @@ def test_default_runner_falls_back_when_langgraph_is_unavailable() -> None:
         prefer_langgraph=True,
     )
 
+    assert isinstance(runner, HandoffAgentRunner)
     if all(importlib.util.find_spec(module) for module in ("langgraph", "langchain", "langchain_openai")):
-        assert isinstance(runner, LangGraphAgentRunner)
+        assert isinstance(runner.main_runner, LangGraphAgentRunner)
     else:
-        assert isinstance(runner.rag_tool, RagAgentTool)
+        assert isinstance(runner.main_runner.rag_tool, RagAgentTool)

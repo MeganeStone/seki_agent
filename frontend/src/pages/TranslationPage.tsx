@@ -9,6 +9,7 @@ type TranslationPageProps = {
   accessToken: string | null
 }
 
+const LAST_TASK_STORAGE_KEY = 'seki_last_translation_task'
 const targetLanguages = ['英语', '日语', '中文', '德语', '法语']
 const supportedSuffixes = ['.pptx', '.xlsx', '.docx']
 
@@ -29,12 +30,37 @@ function translatedDownloadName(filename: string | undefined, targetLanguage: st
   return `${filename.slice(0, dotIndex)}_${targetLanguage}${filename.slice(dotIndex)}`
 }
 
+function readCachedTask(): TranslationTask | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as TranslationTask
+  } catch {
+    return null
+  }
+}
+
+function persistTask(task: TranslationTask | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (task) {
+      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+    } else {
+      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 function TranslationPage({ accessToken }: TranslationPageProps) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [selectedFileId, setSelectedFileId] = useState('')
   const [targetLanguage, setTargetLanguage] = useState(targetLanguages[0])
   const [customLanguage, setCustomLanguage] = useState('')
-  const [task, setTask] = useState<TranslationTask | null>(null)
+  const [apiKey, setApiKey] = useState('')
+  const [task, setTask] = useState<TranslationTask | null>(() => readCachedTask())
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -70,6 +96,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
 
     let isCurrent = true
     const token = accessToken
+    const cachedTask = readCachedTask()
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -89,6 +116,21 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
 
     void loadFiles()
 
+    if (cachedTask) {
+      void (async () => {
+        try {
+          const latestTask = await getTranslationTask(token, cachedTask.task_id)
+          if (!isCurrent) return
+          setTask(latestTask)
+          persistTask(latestTask)
+        } catch {
+          if (isCurrent) {
+            persistTask(null)
+          }
+        }
+      })()
+    }
+
     return () => {
       isCurrent = false
     }
@@ -103,8 +145,10 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
       const created = await createTranslationTask(accessToken, {
         file_id: selectedFileId,
         target_language: effectiveTargetLanguage,
+        api_key: apiKey.trim() || undefined,
       })
       setTask(created)
+      persistTask(created)
     } catch (error) {
       setError(error instanceof Error ? error.message : '翻译任务创建失败')
     } finally {
@@ -118,7 +162,9 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
     setRefreshingTask(true)
     setError('')
     try {
-      setTask(await getTranslationTask(accessToken, task.task_id))
+      const refreshed = await getTranslationTask(accessToken, task.task_id)
+      setTask(refreshed)
+      persistTask(refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : '翻译任务查询失败')
     } finally {
@@ -198,6 +244,17 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
             value={customLanguage}
             onChange={(event) => setCustomLanguage(event.target.value)}
             placeholder="可选，填写后优先生效"
+          />
+        </label>
+
+        <label>
+          临时 API key
+          <input
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="可选，后端环境配置优先生效"
+            type="password"
+            autoComplete="off"
           />
         </label>
 

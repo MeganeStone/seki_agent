@@ -190,7 +190,8 @@ file=<binary>
 ```json
 {
   "message": "请解释某个 TSU 功能",
-  "use_knowledge_base": true
+  "use_knowledge_base": true,
+  "api_key": "可选，环境未配置时使用"
 }
 ```
 
@@ -261,7 +262,8 @@ file=<binary>
 ```json
 {
   "file_id": "file-id",
-  "target_language": "英语"
+  "target_language": "英语",
+  "api_key": "可选，环境未配置时使用"
 }
 ```
 
@@ -389,6 +391,34 @@ file=<binary>
 
 ## 9. 通用任务接口
 
+### GET /tasks
+
+用途：按统一格式列出当前用户的最近任务。
+
+说明：
+
+- 当前已聚合 translation、SPI、diff 三类任务。
+- 当前任务历史列表不包含重试和进度推送。
+- 支持 `limit` 查询参数，范围 1-200，默认 50。
+
+响应：
+
+```json
+{
+  "items": [
+    {
+      "task_id": "task-id",
+      "type": "translation",
+      "status": "succeeded",
+      "result_file_id": "translated-file-id",
+      "error": null,
+      "created_at": "2026-05-18T10:00:00Z",
+      "updated_at": "2026-05-18T10:01:00Z"
+    }
+  ]
+}
+```
+
 ### GET /tasks/{task_id}
 
 用途：按统一格式查询任务。
@@ -400,7 +430,7 @@ file=<binary>
   "task_id": "task-id",
   "type": "translation",
   "status": "running",
-  "progress": 42,
+  "result_file_id": "translated-file-id",
   "created_at": "2026-05-18T10:00:00Z",
   "updated_at": "2026-05-18T10:01:00Z",
   "error": null
@@ -411,12 +441,24 @@ file=<binary>
 
 用途：取消任务。
 
+说明：
+
+- 当前取消为协作式终止：排队或运行中的任务会被标记为 `cancelled`。
+- 后台线程不能被安全强杀，长时间阻塞在旧脚本或外部 API 调用中的任务，会在返回到后端检查点后停止写入成功结果。
+- 已完成、已失败或已取消的任务再次取消时保持原状态。
+- 只能取消当前登录用户自己的任务。
+
 响应：
 
 ```json
 {
   "task_id": "task-id",
-  "status": "cancelled"
+  "type": "translation",
+  "status": "cancelled",
+  "result_file_id": null,
+  "error": null,
+  "created_at": "2026-05-18T10:00:00Z",
+  "updated_at": "2026-05-18T10:01:00Z"
 }
 ```
 
@@ -427,5 +469,69 @@ file=<binary>
 - 是否需要知识库文档管理接口。
 - 是否需要部门共享文件接口。
 - 是否需要对话历史列表和删除接口。
-- 是否需要任务历史列表接口。
 - 是否需要前端实时进度，采用轮询还是 SSE。
+- 是否需要通用任务接口返回更细的 `progress`、源文件名、结果文件名、任务参数摘要。
+
+## Code Agent Pending Operation API
+
+用于 code agent 高风险动作的人机确认。当前主要服务于既有文件/目录删除，以及后续未知命令确认执行。
+
+### GET /code-operations
+
+查询当前用户的待确认/已处理 code agent 操作。
+
+查询参数：
+
+- `conversation_id`：可选，按会话过滤。
+- `status`：可选，按 `pending/executed/failed/cancelled/expired` 过滤。
+- `limit`：默认 50，范围 1-200。
+
+响应：
+
+```json
+{
+  "items": [
+    {
+      "operation_id": "operation-id",
+      "conversation_id": "conv-id",
+      "agent_name": "code_agent",
+      "operation_type": "delete_path",
+      "status": "pending",
+      "payload": {
+        "path": "existing.txt",
+        "recursive": false
+      },
+      "result": null,
+      "created_at": "2026-05-21T10:00:00Z",
+      "updated_at": "2026-05-21T10:00:00Z",
+      "expires_at": "2026-05-21T11:00:00Z"
+    }
+  ]
+}
+```
+
+### GET /code-operations/{operation_id}
+
+查询单个 code agent 待确认操作。只能查询当前登录用户自己的操作。
+
+### POST /code-operations/{operation_id}/confirm
+
+确认执行待确认操作。
+
+当前已支持：
+
+- `delete_path`：用户确认后删除既有文件/目录。
+
+当前暂不真实执行：
+
+- 未知 `run_allowed_command`：可以入库和确认，但确认后返回失败结果，提示确认后执行未知命令的策略尚未开放。
+
+### POST /code-operations/{operation_id}/cancel
+
+取消待确认操作。只有 `pending` 状态可以取消。
+
+前端交互约定：
+
+- 待确认操作不作为独立 code agent 页面暴露，而是在 Agent 对话页当前 assistant 消息下展示。
+- Chat 响应中的 `data.pending_operation` 是首屏展示来源。
+- `GET /code-operations?conversation_id=...&status=pending` 用于刷新当前会话仍未处理的待确认操作。

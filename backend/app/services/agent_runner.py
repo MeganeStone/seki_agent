@@ -1,9 +1,11 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
+from app.core.api_keys import temporary_env_api_key
 from app.services.agent_tools import (
     AgentToolResult,
+    ChatAgentTool,
     DiffAgentTool,
     RagAgentTool,
     SpiAgentTool,
@@ -17,6 +19,8 @@ class AgentRequest:
     conversation_id: str
     message: str
     use_knowledge_base: bool = True
+    agent_name: str = "main_agent"
+    api_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,63 @@ class AgentRunner(Protocol):
         ...
 
 
+class CodeAgentUnavailableRunner:
+    """Placeholder code-agent boundary until safe code execution is designed."""
+
+    def run(self, request: AgentRequest) -> AgentResponse:
+        return AgentResponse(
+            answer=(
+                "代码助手能力正在迁移中。当前已建立上下文隔离的 code_agent 边界，"
+                "但尚未开放文件写入、删除或命令执行。"
+            ),
+            data={"agent_name": request.agent_name},
+            route="code_agent",
+        )
+
+
+class HandoffAgentRunner:
+    """Routes requests between the main agent and isolated sub-agents."""
+
+    def __init__(
+        self,
+        main_runner: AgentRunner,
+        code_runner: AgentRunner | None = None,
+        main_agent_name: str = "main_agent",
+        code_agent_name: str = "code_agent",
+        enable_keyword_routing: bool = False,
+    ):
+        self.main_runner = main_runner
+        self.code_runner = code_runner or CodeAgentUnavailableRunner()
+        self.main_agent_name = main_agent_name
+        self.code_agent_name = code_agent_name
+        self.enable_keyword_routing = enable_keyword_routing
+
+    def run(self, request: AgentRequest) -> AgentResponse:
+        if request.agent_name == self.code_agent_name or (
+            self.enable_keyword_routing and self._looks_like_code_task(request.message)
+        ):
+            return self.code_runner.run(replace(request, agent_name=self.code_agent_name))
+        return self.main_runner.run(replace(request, agent_name=self.main_agent_name))
+
+    @staticmethod
+    def _looks_like_code_task(message: str) -> bool:
+        lowered = message.lower()
+        code_keywords = [
+            "code",
+            "python",
+            "script",
+            "shell",
+            "debug",
+            "代码",
+            "脚本",
+            "调试",
+            "运行命令",
+            "修改文件",
+            "写文件",
+        ]
+        return any(keyword in lowered or keyword in message for keyword in code_keywords)
+
+
 class RuleBasedAgentRunner:
     """Temporary deterministic runner for Agent wiring tests.
 
@@ -47,11 +108,13 @@ class RuleBasedAgentRunner:
     def __init__(
         self,
         rag_tool: RagAgentTool,
+        chat_tool: ChatAgentTool | None = None,
         translation_tool: TranslationAgentTool | None = None,
         spi_tool: SpiAgentTool | None = None,
         diff_tool: DiffAgentTool | None = None,
     ):
         self.rag_tool = rag_tool
+        self.chat_tool = chat_tool
         self.translation_tool = translation_tool
         self.spi_tool = spi_tool
         self.diff_tool = diff_tool
@@ -63,7 +126,8 @@ class RuleBasedAgentRunner:
             file_id = self._extract_value(message, "file_id")
             target_language = self._extract_value(message, "target_language") or self._extract_value(message, "target_lang")
             if file_id and target_language:
-                result = self.translation_tool(request.owner_username, file_id, target_language)
+                with temporary_env_api_key("TRANSLATE_API_KEY", request.api_key):
+                    result = self.translation_tool(request.owner_username, file_id, target_language)
                 return self._from_tool_result(result, route="translation")
 
         if self.spi_tool and self._looks_like_spi(message):
@@ -80,9 +144,13 @@ class RuleBasedAgentRunner:
                 return self._from_tool_result(result, route="diff")
 
         if not request.use_knowledge_base:
-            return AgentResponse(answer="知识库已禁用，当前 Agent runner 未配置普通聊天模型。", route="direct")
+            if self.chat_tool is None:
+                return AgentResponse(answer="知识库已禁用，当前 Agent runner 未配置普通聊天模型。", route="direct")
+            result = self.chat_tool(message, api_key=request.api_key)
+            return self._from_tool_result(result, route="direct")
 
-        result = self.rag_tool(message)
+        with temporary_env_api_key("SEKI_RAG_API_KEY", request.api_key):
+            result = self.rag_tool(message)
         return self._from_tool_result(result, route="rag")
 
     @staticmethod

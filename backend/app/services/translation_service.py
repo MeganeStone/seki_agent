@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.core.api_keys import temporary_env_api_key
 from app.core.config import get_settings
 from app.db.sqlite import connect
 from app.repositories.translation_repository import TranslationRepository
@@ -43,17 +44,32 @@ class TranslationService:
         self.uses_legacy_translator = translator is None
         self.task_executor = task_executor or SynchronousTaskExecutor()
 
-    def create_task(self, owner_username: str, file_id: str, target_language: str) -> TranslationTaskRead:
+    def create_task(
+        self,
+        owner_username: str,
+        file_id: str,
+        target_language: str,
+        api_key: str | None = None,
+    ) -> TranslationTaskRead:
         clean_target_language = target_language.strip()
         if not clean_target_language:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="target_language is required")
 
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, file_id, clean_target_language)
-        self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, file_id, clean_target_language))
+        self.task_executor.submit(
+            lambda: self._run_task_in_executor(task_id, owner_username, file_id, clean_target_language, api_key)
+        )
         return self.get_task(owner_username, task_id)
 
-    def _run_task_in_executor(self, task_id: str, owner_username: str, file_id: str, target_language: str) -> None:
+    def _run_task_in_executor(
+        self,
+        task_id: str,
+        owner_username: str,
+        file_id: str,
+        target_language: str,
+        api_key: str | None = None,
+    ) -> None:
         if isinstance(self.task_executor, ThreadPoolTaskExecutor):
             conn = connect(self.db_path)
             try:
@@ -66,19 +82,29 @@ class TranslationService:
                     task_executor=SynchronousTaskExecutor(),
                     db_path=self.db_path,
                 )
-                service._run_task(task_id, owner_username, file_id, target_language)
+                service._run_task(task_id, owner_username, file_id, target_language, api_key=api_key)
             finally:
                 conn.close()
             return
 
-        self._run_task(task_id, owner_username, file_id, target_language)
+        self._run_task(task_id, owner_username, file_id, target_language, api_key=api_key)
 
-    def _run_task(self, task_id: str, owner_username: str, file_id: str, target_language: str) -> None:
+    def _run_task(
+        self,
+        task_id: str,
+        owner_username: str,
+        file_id: str,
+        target_language: str,
+        api_key: str | None = None,
+    ) -> None:
         try:
-            if self.uses_legacy_translator and not os.environ.get("TRANSLATE_API_KEY"):
+            if self._is_cancelled(task_id, owner_username):
+                return
+            self.tasks.update_result(task_id, owner_username, status="running")
+            if self.uses_legacy_translator and not (os.environ.get("TRANSLATE_API_KEY") or api_key):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="TRANSLATE_API_KEY is required for translation tasks",
+                    detail="请先配置翻译 API key，或在前端输入临时 API key。",
                 )
             source_path, source_name = self.file_service.get_file_path(owner_username, file_id)
             self._validate_document(source_name)
@@ -88,11 +114,14 @@ class TranslationService:
             local_source = task_workspace / source_name
             shutil.copy2(source_path, local_source)
 
-            self.translator(source_name, str(task_workspace), target_language)
+            with temporary_env_api_key("TRANSLATE_API_KEY", api_key):
+                self.translator(source_name, str(task_workspace), target_language)
             output_path = task_workspace / f"{local_source.stem}_{target_language}{local_source.suffix}"
             if not output_path.exists() or not output_path.is_file():
                 raise RuntimeError("Translator did not produce an output file")
 
+            if self._is_cancelled(task_id, owner_username):
+                return
             result_file = self.file_service.save_generated_content(
                 owner_username,
                 output_path.name,
@@ -106,8 +135,12 @@ class TranslationService:
             )
             self._to_schema(row)
         except HTTPException as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc.detail))
         except Exception as exc:
+            if self._is_cancelled(task_id, owner_username):
+                return
             self.tasks.update_result(task_id, owner_username, status="failed", error=str(exc))
         finally:
             shutil.rmtree(self.translation_work_dir / task_id, ignore_errors=True)
@@ -162,3 +195,7 @@ class TranslationService:
             return self.file_service.get_file(owner_username, file_id).filename
         except HTTPException:
             return None
+
+    def _is_cancelled(self, task_id: str, owner_username: str) -> bool:
+        row = self.tasks.get_for_owner(task_id, owner_username)
+        return row is not None and row["status"] == "cancelled"

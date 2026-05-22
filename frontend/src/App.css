@@ -227,8 +227,10 @@ code {
 .task-toolbar button,
 .task-form button,
 .task-actions button,
+.tasks-toolbar button,
 .chat-toolbar button,
-.chat-input button {
+.chat-input button,
+.pending-actions button {
   border: 0;
   border-radius: 6px;
   background: #2f6fda;
@@ -243,13 +245,20 @@ code {
   padding: 9px 12px;
 }
 
+.text-action.small {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 .files-toolbar button,
 .upload-panel button,
 .task-toolbar button,
 .task-form button,
 .task-actions button,
+.tasks-toolbar button,
 .chat-toolbar button,
-.chat-input button {
+.chat-input button,
+.pending-actions button {
   min-height: 38px;
   padding: 0 14px;
 }
@@ -265,8 +274,10 @@ code {
 .task-toolbar button:hover,
 .task-form button:hover,
 .task-actions button:hover,
+.tasks-toolbar button:hover,
 .chat-toolbar button:hover,
 .chat-input button:hover,
+.pending-actions button:hover,
 .text-action:hover {
   background: #275fc0;
 }
@@ -276,13 +287,16 @@ code {
 .task-toolbar button:disabled,
 .task-form button:disabled,
 .task-actions button:disabled,
-.chat-input button:disabled {
+.tasks-toolbar button:disabled,
+.chat-input button:disabled,
+.pending-actions button:disabled {
   background: #9eabbc;
   cursor: not-allowed;
 }
 
 .files-page,
 .task-page,
+.tasks-page,
 .chat-page {
   display: grid;
   gap: 14px;
@@ -296,6 +310,7 @@ code {
 .files-toolbar,
 .task-toolbar,
 .chat-toolbar,
+.tasks-toolbar,
 .upload-panel {
   display: flex;
   align-items: center;
@@ -305,6 +320,7 @@ code {
 
 .files-toolbar h2,
 .task-toolbar h2,
+.tasks-toolbar h2,
 .chat-toolbar h2 {
   margin: 0;
   font-size: 18px;
@@ -312,6 +328,7 @@ code {
 
 .files-toolbar p,
 .task-toolbar p,
+.tasks-toolbar p,
 .chat-toolbar p,
 .file-hint {
   margin: 6px 0 0;
@@ -337,6 +354,13 @@ code {
   overflow: hidden;
 }
 
+.task-history-table {
+  display: grid;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 .file-row {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) 120px 210px 132px;
@@ -345,6 +369,28 @@ code {
   min-height: 48px;
   padding: 10px 12px;
   border-top: 1px solid #eef2f7;
+}
+
+.task-history-row {
+  display: grid;
+  grid-template-columns: 110px 110px minmax(140px, 1fr) minmax(140px, 1fr) 190px 80px;
+  gap: 12px;
+  align-items: center;
+  min-height: 52px;
+  padding: 10px 12px;
+  border-top: 1px solid #eef2f7;
+}
+
+.task-history-row:first-child {
+  border-top: 0;
+}
+
+.task-history-row > span:nth-child(3),
+.task-history-row > span:nth-child(4) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-row:first-child {
@@ -362,6 +408,18 @@ code {
   background: #f1f5fa;
   color: #3b4658;
   font-weight: 700;
+}
+
+.task-history-head {
+  background: #f1f5fa;
+  color: #3b4658;
+  font-weight: 700;
+}
+
+.task-history-error {
+  grid-column: 1 / -1;
+  color: #b83232;
+  overflow-wrap: anywhere;
 }
 
 .file-actions {
@@ -570,6 +628,55 @@ code {
   color: #b83232;
 }
 
+.chat-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pending-operation {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid #f0c36c;
+  border-radius: 8px;
+  background: #fff8e8;
+}
+
+.pending-operation > div:first-child,
+.pending-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pending-operation p {
+  margin: 0;
+  color: #4f3f1c;
+  overflow-wrap: anywhere;
+}
+
+.pending-actions {
+  justify-content: flex-start;
+}
+
+.pending-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.pending-actions button.secondary {
+  background: #eef2f7;
+  color: #3b4658;
+}
+
+.pending-actions button.secondary:hover {
+  background: #dfe5ee;
+}
+
 .chat-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -626,6 +733,7 @@ code {
   .files-toolbar,
   .task-toolbar,
   .chat-toolbar,
+  .tasks-toolbar,
   .upload-panel {
     align-items: stretch;
     flex-direction: column;
@@ -668,7 +776,17 @@ code {
     overflow: visible;
   }
 
+  .task-history-table {
+    border: 0;
+    gap: 10px;
+    overflow: visible;
+  }
+
   .file-head {
+    display: none;
+  }
+
+  .task-history-head {
     display: none;
   }
 
@@ -677,6 +795,18 @@ code {
     gap: 6px;
     border: 1px solid #dfe5ee;
     border-radius: 8px;
+  }
+
+  .task-history-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    border: 1px solid #dfe5ee;
+    border-radius: 8px;
+  }
+
+  .task-history-row > span:nth-child(3),
+  .task-history-row > span:nth-child(4) {
+    white-space: normal;
   }
 
   .file-actions {

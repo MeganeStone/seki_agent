@@ -7,6 +7,7 @@ from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import ChatMessageResponse, ConversationCreateResponse
 from app.services.agent_runner import AgentRequest, AgentRunner
 from app.services.agent_runner_factory import create_default_agent_runner
+from app.services.code_operation_service import CodeOperationService
 from app.services.diff_service import DiffService
 from app.services.file_service import FileService
 from app.services.rag_service import RagService
@@ -42,6 +43,7 @@ class AgentService:
             translation_service=translation_service,
             spi_service=spi_service,
             diff_service=diff_service,
+            code_operation_service=CodeOperationService(self.conn),
         )
 
     def create_conversation(self, owner_username: str) -> ConversationCreateResponse:
@@ -55,6 +57,7 @@ class AgentService:
         conversation_id: str,
         message: str,
         use_knowledge_base: bool = True,
+        api_key: str | None = None,
     ) -> ChatMessageResponse:
         clean_message = message.strip()
         if not clean_message:
@@ -71,15 +74,26 @@ class AgentService:
                 conversation_id=conversation_id,
                 message=clean_message,
                 use_knowledge_base=use_knowledge_base,
+                api_key=api_key.strip() if api_key else None,
             )
         )
         answer = result.answer
         self.chats.add_message(uuid4().hex, conversation_id, owner_username, "assistant", answer)
+        data = result.data
+        if data and data.get("requires_confirmation"):
+            operation = CodeOperationService(self.conn).create_pending_from_result(
+                owner_username=owner_username,
+                conversation_id=conversation_id,
+                agent_name=str(data.get("agent_name") or "code_agent"),
+                operation_type=str(data.get("operation_type") or result.route),
+                payload=data,
+            )
+            data = {**data, "pending_operation": operation.model_dump(mode="json")}
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
             answer=answer,
             sources=result.sources,
             route=result.route,
-            data=result.data,
+            data=data,
         )

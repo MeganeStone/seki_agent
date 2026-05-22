@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class TranslationTaskCreate(BaseModel):
     file_id: str
     target_language: str = Field(min_length=1)
+    api_key: str | None = None
 
 
 class TranslationTaskRead(BaseModel):

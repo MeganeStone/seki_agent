@@ -35,6 +35,7 @@
 - 文档翻译。
 - SPI log 解析。
 - 版本差分比较。
+- 任务历史：通过统一任务接口查看 translation/SPI/diff 最近任务。
 - Agent 入口：通过 Chat API 调用后端 AgentService/AgentRunner，前端导航已明确显示为 `Agent 入口`。
 - `TaskResultPanel` 通用任务结果组件，已被 translation、SPI、diff 页面复用。
 - Agent 对话页已支持按 `route + task_id` 查询 translation/SPI/diff 任务状态，并可按 `result_file_id` 下载工具结果文件。
@@ -44,14 +45,32 @@
 - `Chat API -> AgentService -> AgentRunner -> Agent tool adapter -> backend service`
 - Agent tool adapter 只做参数映射、调用 service、整理返回；不做业务逻辑。
 - service 层负责业务规则、持久化、文件隔离。
+- 已确认用户之间的文件、任务、conversation/message 必须隔离；跨用户查询、下载、取消任务都必须拒绝。
+- `web_search` 是 Agent 专用联网工具，不做前端页面；默认可以保持关闭，后续接真实 provider 时补配置、超时、结果裁剪和错误映射。
+- `code_agent` 的定位是主 Agent 按任务需要切换的上下文隔离子 Agent，不提供单独前端入口；新实现不能复用旧 `multi_agent.py` 的进程级闭包上下文。
+- RAG 知识库源文件只能由本地维护者更新或删除，普通用户不能通过前端上传到 RAG 系统。
+- “工程化、可测试、可替换”的具体含义已记录到 `docs/architecture.md`：边界收敛到 router/service/repository/tool adapter/runner，测试使用 fake service/fake LLM/fake graph，runner/web search/task executor/RAG answerer 都可以替换；LangSmith 保留为真实链路追踪工具，但不作为单元测试前提。
 - 长任务工具返回 task/result_file_id，前端或 Agent 可查询/下载。
 - 旧 `old/src/multi_agent.py` 的闭包上下文不适合多用户并发，后续必须替换为 `owner_username + conversation_id` 隔离。
 - `AgentService` 默认 runner 已注入 RAG、translation、SPI、diff service；Agent 对话入口和前端手动入口共享这些 service。
 - Chat API 响应已保留 Agent runner 的 `route` 和 `data` 字段。
 - 前端 Agent 对话页已展示结构化工具结果，包括工具路由、任务 ID、状态、结果文件 ID 和错误信息。
-- 已完成旧 `old/src/` Agent 工具链差距梳理：RAG/translation/SPI/diff 已迁移到新后端 service/tool adapter；`web_search`、`code_agent`、多 Agent 交接、长上下文摘要和文件名到 `file_id` 解析仍待设计。
+- 已完成旧 `old/src/` Agent 工具链差距梳理：RAG/translation/SPI/diff 已迁移到新后端 service/tool adapter；`web_search` 已有默认禁用抽象；`code_agent` 已有 handoff 骨架但真实代码执行尚未开放；多 Agent 真实 LangGraph 子图交接、长上下文摘要和更强的文件名到 `file_id` 解析仍待设计。
 - 已新增 `FileLookupAgentTool`，让 LangGraph Agent 能按当前用户 workspace 文件名/后缀查找文件 ID，降低用户手动输入 `file_id` 的门槛。
 - 已补充 Agent 多步工具链契约测试，覆盖 `file_lookup -> translation`、`file_lookup -> spi`、`file_lookup -> diff` 的 file_id 传递。
+- 已新增 `HandoffAgentRunner` 和 `CodeAgentUnavailableRunner`，用于建立主 Agent/code agent 上下文隔离边界；默认不再根据关键词硬编码猜测是否切换到 `code_agent`。真实切换后续要通过 LangGraph handoff tool/子图由 Agent 自主调用；当前仍不开放真实代码文件操作或命令执行。
+- `AgentRequest` 已新增 `agent_name`，默认 `main_agent`；`LangGraphAgentRunner` 的 `thread_id` 已从 `owner_username:conversation_id` 扩展为 `owner_username:conversation_id:agent_name`，为主 Agent/code agent 上下文隔离打基础。
+- `AgentRequest` 已新增可选 `api_key`，Chat API 和翻译 API 均可接收前端临时 API key。优先级为环境配置 key > 前端临时 key > 缺 key 提示；临时 key 不写入对话消息或任务记录。
+- 已新增 `agent_handoff_tools.py` 和 `multi_agent_graph_factory.py`：真实 LangGraph runner 会创建父级 multi-agent graph，主 Agent 可通过 `transfer_to_code_agent` 工具返回 `Command(goto="code_agent")`，父图接住后进入 `code_agent` 占位节点。当前 code_agent 仍只返回不可用提示。
+- 已新增 `docs/code-agent-design.md`：重新设计 code agent 为受限本地执行助手，首期通过 `CodeExecutionService` 只开放 `list_dir/read_text_file/write_text_file`；`delete_file` 和任意 `execute_shell(command)` 默认不开放，后续通过命令白名单、用户确认和审计逐步放权。
+- 已实现 `backend/app/services/code_execution_service.py` 阶段 A，并新增 `backend/tests/test_code_execution_service.py`。当前支持列目录、读 UTF-8 小文本、写 UTF-8 文本；默认拒绝路径越界、符号链接逃逸、敏感文件、超大读写和未显式覆盖已有文件。当前还没有挂到 LangGraph code_agent 工具。
+- 已新增 `backend/app/services/code_agent_tools.py`、`backend/app/services/code_langchain_tool_adapter.py`、`backend/app/services/code_agent_factory.py`，并把 `code_list_dir`、`code_read_text_file`、`code_write_text_file`、`transfer_to_main_agent` 接入真实 code_agent graph。`SEKI_AGENT_RUNNER=langgraph` 时默认 runner 会创建 main agent graph + code agent graph。
+- Shell 和删除最终目标是开放，但后续必须通过受限 Python 脚本执行、命令白名单、审计和用户确认流程逐步放权，不直接恢复旧版任意 `execute_shell(command)`。
+- `CodeExecutionService` 默认 allowed roots 已包含项目根目录、workspace 和共享 `skills_dir`；skills 是所有用户通用能力，不限制在单用户 workspace 内。可通过 `SEKI_CODE_AGENT_ALLOWED_ROOTS` 覆盖。
+- 已新增 `run_python_script` 和 `code_run_python_script`：只能运行允许目录内已存在的 `.py` 文件，使用当前后端 Python，支持 `script_args`、超时、stdout/stderr 裁剪和审计；仍不开放任意 shell 和删除。
+- 已新增 `create_dir/delete_path` 和 `code_create_dir/code_delete_path`：code agent 本次运行创建的文件/目录可直接删除；其他既有内容返回 `requires_confirmation`，当前尚未实现用户确认 API/UI。
+- 已新增 `CommandPolicy`、`run_allowed_command` 和 `code_run_allowed_command`。策略采用“白名单直接执行、明确黑名单拒绝、其他未知命令进入用户确认”，不采用纯黑名单；当前允许 `git status/diff`、`pytest`、`python -m pytest`、`npm run lint/build`，拒绝危险命令和 shell 控制符。仍不开放任意 `execute_shell(command)`。
+- 关于人机交互：当前本地 LangChain/LangGraph 版本未发现可直接稳定接入的 `HumanInTheLoopMiddleware`；短期建议先实现后端 pending operation + 前端确认 UI，后续再评估 LangGraph interrupt。
 - 已新增受控 live Agent 工具选择测试，使用 fake file/translation service 验证真实 LangGraph Agent 是否会先调用 `file_lookup` 再调用 `translation`；默认跳过，仅显式配置 API key 时运行。
 - 已根据 live 测试反馈修复工具用户上下文绑定：`owner_username` 不再暴露给 LLM 填写，而是由后端按当前 `AgentRequest` 绑定，避免模型填错用户导致隔离风险。
 - live 测试已验证真实 LangGraph Agent 可以完成 `file_lookup -> translation`。
@@ -98,7 +117,7 @@
 - `backend/app/services/langgraph_agent_factory.py`
 - `backend/tests/test_langgraph_agent_factory.py`
 
-当前默认仍使用 `SEKI_AGENT_RUNNER="rule"`，如需启用 LangGraph runner，配置 `SEKI_AGENT_RUNNER="langgraph"` 并提供 `SEKI_RAG_API_KEY`。
+当前默认仍使用 `SEKI_AGENT_RUNNER="rule"`，如需启用 LangGraph runner，配置 `SEKI_AGENT_RUNNER="langgraph"` 并提供 `SEKI_RAG_API_KEY`，或在前端 Chat 页输入临时 API key。
 
 LangGraph runner 调用 graph 时必须传入 checkpointer config：
 
@@ -149,6 +168,18 @@ npm run lint
 - Excel inlineStr 翻译、单元级容错、translation、SPI、files 相关后端测试已通过；最近一次翻译专项测试 7 个通过。
 - 前端 build 通过。
 - 前端 lint 通过。
+- 最近一次前端任务状态持久化改动后，`npm run build` 和 `npm run lint` 均通过。
+- 统一任务历史接口改动后，`backend/tests/test_tasks.py backend/tests/test_translation.py backend/tests/test_spi.py backend/tests/test_diff.py backend/tests/test_task_executor.py` 共 22 个后端测试通过；前端 `npm run build` 和 `npm run lint` 通过。
+- 前端任务历史页接入后，`backend/tests/test_tasks.py` 4 个后端测试通过；前端 `npm run build` 和 `npm run lint` 通过。
+- 长任务协作式取消接入后，`backend/tests/test_tasks.py backend/tests/test_task_executor.py backend/tests/test_translation.py backend/tests/test_spi.py backend/tests/test_diff.py` 共 26 个后端测试通过；前端 `npm run build` 和 `npm run lint` 通过。
+- code_agent handoff 骨架接入后，Agent/Chat 相关后端测试 34 个通过、1 个按环境跳过；前端 `npm run build` 和 `npm run lint` 通过。
+- 本次 handoff/API key 契约修正后，`backend/tests/test_agent_handoff_tools.py backend/tests/test_multi_agent_graph_factory.py backend/tests/test_langgraph_agent_factory.py backend/tests/test_langgraph_agent_runner.py backend/tests/test_agent_runner.py backend/tests/test_agent_service.py backend/tests/test_chat.py` 共 37 个通过、1 个按环境跳过；前端 `npm run build` 和 `npm run lint` 通过。
+- 本次新增 code agent 设计文档，无代码执行改动，未新增依赖。
+- 本次 `CodeExecutionService` 阶段 A 后端测试：`backend/tests/test_code_execution_service.py backend/tests/test_agent_handoff_tools.py backend/tests/test_multi_agent_graph_factory.py backend/tests/test_langgraph_agent_runner.py backend/tests/test_agent_runner.py` 共 34 个通过、1 个按环境跳过。
+- 本次 code_agent 工具接入后端测试：`backend/tests/test_code_execution_service.py backend/tests/test_code_langchain_tool_adapter.py backend/tests/test_code_agent_factory.py backend/tests/test_agent_handoff_tools.py backend/tests/test_multi_agent_graph_factory.py backend/tests/test_langgraph_agent_factory.py backend/tests/test_langgraph_agent_runner.py backend/tests/test_agent_runner.py backend/tests/test_agent_service.py backend/tests/test_chat.py` 共 55 个通过、1 个按环境跳过。
+- 本次受限 Python 脚本执行接入后端测试：同一组 Agent/code 测试共 61 个通过、1 个按环境跳过。
+- 本次确认式删除第一阶段接入后端测试：同一组 Agent/code 测试共 65 个通过、1 个按环境跳过。
+- 本次命令白名单接入后端测试：同一组 Agent/code 测试共 71 个通过、1 个按环境跳过。
 
 ## 本地运行提示
 
@@ -171,6 +202,10 @@ D:\seki\AI\Langchain\seki_agent\data\db\seki_agent.db
 - 翻译结果下载名已修复为 `原文件名_目标语言.扩展名`；如果后端返回 `result_filename`，以前者为准。
 - Excel 翻译器已补充 `xl/worksheets/sheet*.xml` 中 `inlineStr/str` 单元格文本翻译；此前只处理 `sharedStrings.xml`、drawing 和 chart，遇到部分 xlsx 会打印“未找到 sharedStrings.xml”并生成未翻译文件。现在若完全找不到可翻译文本，会失败并返回错误，不再假成功。
 - 已修复日语翻译失败分支中 `ToolException` 未导入导致的 `name 'ToolException' is not defined`；同时 Excel sharedStrings/worksheet 分组翻译改为单元级容错，某个单元失败不会导致整组文本全部丢失。
+- 已修复前端任务状态面板切换页面后消失的问题：translation/SPI/diff 页面会将最近一次任务缓存到 `localStorage`，页面重新挂载时先恢复 `TaskResultPanel`，再向后端刷新任务状态。缓存 key 分别为 `seki_last_translation_task`、`seki_last_spi_task`、`seki_last_diff_task`。
+- 已新增统一任务只读接口：`GET /api/v1/tasks` 按更新时间聚合当前用户 translation/SPI/diff 任务，支持 `limit=1..200`；`GET /api/v1/tasks/{task_id}` 可按统一格式查询任务。当前统一响应包含 `task_id`、`type`、`status`、`result_file_id`、`error`、`created_at`、`updated_at`，还不是完整任务详情/取消/重试接口。
+- 已新增长任务协作式取消：`POST /api/v1/tasks/{task_id}/cancel` 会把当前用户 pending/running 的 translation/SPI/diff 任务标记为 `cancelled`；任务执行开始和写入结果前会检查取消状态，避免取消后覆盖为成功。当前不能安全强杀已阻塞在线程内的旧脚本或外部 API 调用，任务会在返回检查点后停止写入结果。
+- 前端 `任务历史` 页面已新增手动“终止”按钮，调用统一取消接口；当前不提供重试或直接下载结果。
 
 由于默认 `data/db` 在当前环境曾出现 SQLite 写入权限问题，可临时使用：
 
@@ -187,3 +222,59 @@ $env:SEKI_TRANSLATION_WORK_DIR='D:\seki\AI\Langchain\seki_agent\backend\runtime\
 
 - 用户名：`demo`
 - 密码：`demo123`
+
+## Pending Operation 最新状态
+
+- 已新增 code agent pending operation 后端边界：`CodeOperationRepository`、`CodeOperationService`、`/api/v1/code-operations` API 和 schema。
+- Chat/Agent 出口在 `data.requires_confirmation=true` 时会创建 pending operation，并把 `pending_operation` 返回给前端。
+- 本轮不让 Chat HTTP 请求阻塞等待用户确认；agent 本轮结束，前端后续通过确认/取消 API 推进状态。
+- 确认删除既有文件/目录已支持；确认未知 shell 命令暂不真实执行，会返回“确认后执行未知命令的策略尚未开放”。
+- 确认执行结果会追加到同一个 conversation 的 assistant 消息中。
+- 前端 Agent 入口已接入 pending operation：当前 assistant 消息下展示确认卡片，支持确认执行、取消和按当前 conversation 刷新待确认操作。
+- code agent 工具层已接入 pending operation：`code_delete_path` 和 `code_run_allowed_command` 返回 `requires_confirmation` 时会立即创建 pending operation，工具结果包含 `pending_operation_id`，不再完全依赖最终 LLM 回答保留结构化数据。
+- code agent 命令策略已配置化：`SEKI_CODE_AGENT_ALLOWED_COMMAND_PREFIXES` 命中直接执行，`SEKI_CODE_AGENT_CONFIRMED_COMMAND_PREFIXES` 命中先 pending、用户确认后执行；其他未知命令确认后仍不会执行。
+- 后续可在这个持久化边界上接入前端确认 UI，或评估 LangGraph interrupt/resume。
+
+最新验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_code_operation_service.py backend\tests\test_code_operations_api.py backend\tests\test_code_execution_service.py backend\tests\test_agent_service.py backend\tests\test_chat.py
+```
+
+结果：48 passed。
+
+前端接入后最新验证：
+
+```powershell
+cd frontend
+npm run build
+npm run lint
+cd ..
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_code_operation_service.py backend\tests\test_code_operations_api.py backend\tests\test_agent_service.py backend\tests\test_chat.py
+```
+
+结果：前端 build/lint 通过；后端 20 passed。
+
+工具级 pending 和配置化命令策略验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_code_execution_service.py backend\tests\test_code_langchain_tool_adapter.py backend\tests\test_code_operation_service.py backend\tests\test_code_operations_api.py
+```
+
+结果：42 passed。
+
+## Agent 入口可测状态
+
+- 已新增 `ChatModelService`，用于普通聊天 fallback。
+- 默认 `rule` runner 在 `use_knowledge_base=false` 时会调用普通聊天模型，而不是返回“未配置普通聊天模型”的占位提示。
+- 普通聊天模型复用 `SEKI_RAG_BASE_URL`、`SEKI_RAG_MODEL_NAME` 和 API key 优先级：环境 `SEKI_RAG_API_KEY` > 前端临时 key > 缺 key 提示。
+- 前端 Agent 页提示已调整：关闭“使用知识库 / RAG”即可测试普通聊天。
+- 新增本地调试开关 `SEKI_AGENT_ENABLE_KEYWORD_HANDOFF`。默认关闭；打开后 rule runner 可以把明显代码/脚本/文件类请求按关键词送入 code_agent。生产主路径仍建议使用 `SEKI_AGENT_RUNNER=langgraph`，由 agent 通过 handoff tool 自主切换。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_chat_model_service.py backend\tests\test_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_agent_handoff_tools.py backend\tests\test_multi_agent_graph_factory.py
+```
+
+结果：36 passed。

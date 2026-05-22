@@ -40,6 +40,31 @@ SEKI_TASK_EXECUTOR=thread
 SEKI_TASK_EXECUTOR_MAX_WORKERS=3
 ```
 
+Code agent command execution is policy driven:
+
+```env
+# Direct execution, no frontend confirmation.
+SEKI_CODE_AGENT_ALLOWED_COMMAND_PREFIXES='["ruff check","npm test"]'
+
+# The agent can request these commands, but the user must confirm first.
+SEKI_CODE_AGENT_CONFIRMED_COMMAND_PREFIXES='["python --version"]'
+```
+
+Unknown commands that do not match either list become pending operations, but
+will not execute after confirmation until a matching confirmed prefix is
+configured. Dangerous commands and shell control operators are still rejected.
+
+For local debugging, the rule runner can route obvious code/script/file
+requests to `code_agent` by keyword:
+
+```env
+SEKI_AGENT_ENABLE_KEYWORD_HANDOFF=true
+```
+
+Keep this off in production-like runs. The intended production path is
+`SEKI_AGENT_RUNNER=langgraph`, where the main agent decides handoff through
+tools instead of backend keyword guesses.
+
 Health check:
 
 ```text

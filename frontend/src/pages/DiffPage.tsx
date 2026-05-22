@@ -9,6 +9,8 @@ type DiffPageProps = {
   accessToken: string | null
 }
 
+const LAST_TASK_STORAGE_KEY = 'seki_last_diff_task'
+
 function isArchive(file: WorkspaceFile): boolean {
   return file.filename.toLowerCase().endsWith('.tar.gz')
 }
@@ -19,11 +21,35 @@ function formatDate(value: string): string {
   return date.toLocaleString()
 }
 
+function readCachedTask(): DiffTask | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as DiffTask
+  } catch {
+    return null
+  }
+}
+
+function persistTask(task: DiffTask | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (task) {
+      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+    } else {
+      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 function DiffPage({ accessToken }: DiffPageProps) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [leftFileId, setLeftFileId] = useState('')
   const [rightFileId, setRightFileId] = useState('')
-  const [task, setTask] = useState<DiffTask | null>(null)
+  const [task, setTask] = useState<DiffTask | null>(() => readCachedTask())
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -59,6 +85,7 @@ function DiffPage({ accessToken }: DiffPageProps) {
 
     let isCurrent = true
     const token = accessToken
+    const cachedTask = readCachedTask()
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -79,6 +106,21 @@ function DiffPage({ accessToken }: DiffPageProps) {
 
     void loadFiles()
 
+    if (cachedTask) {
+      void (async () => {
+        try {
+          const latestTask = await getDiffTask(token, cachedTask.task_id)
+          if (!isCurrent) return
+          setTask(latestTask)
+          persistTask(latestTask)
+        } catch {
+          if (isCurrent) {
+            persistTask(null)
+          }
+        }
+      })()
+    }
+
     return () => {
       isCurrent = false
     }
@@ -90,12 +132,12 @@ function DiffPage({ accessToken }: DiffPageProps) {
     setSubmitting(true)
     setError('')
     try {
-      setTask(
-        await createDiffTask(accessToken, {
-          left_file_id: leftFileId,
-          right_file_id: rightFileId,
-        }),
-      )
+      const created = await createDiffTask(accessToken, {
+        left_file_id: leftFileId,
+        right_file_id: rightFileId,
+      })
+      setTask(created)
+      persistTask(created)
     } catch (error) {
       setError(error instanceof Error ? error.message : '版本差分任务创建失败')
     } finally {
@@ -109,7 +151,9 @@ function DiffPage({ accessToken }: DiffPageProps) {
     setRefreshingTask(true)
     setError('')
     try {
-      setTask(await getDiffTask(accessToken, task.task_id))
+      const refreshed = await getDiffTask(accessToken, task.task_id)
+      setTask(refreshed)
+      persistTask(refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : '版本差分任务查询失败')
     } finally {
@@ -202,8 +246,8 @@ function DiffPage({ accessToken }: DiffPageProps) {
           status={task.status}
           fields={[
             { label: '任务 ID', value: task.task_id },
-            { label: '旧版本', value: leftFile?.filename ?? '-' },
-            { label: '新版本', value: rightFile?.filename ?? '-' },
+            { label: '旧版本包', value: leftFile?.filename ?? '-' },
+            { label: '新版本包', value: rightFile?.filename ?? '-' },
             { label: '更新时间', value: formatDate(task.updated_at) },
             ...(task.summary
               ? [

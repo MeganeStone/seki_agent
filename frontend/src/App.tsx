@@ -7,6 +7,7 @@ import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import SpiPage from './pages/SpiPage'
+import TasksPage from './pages/TasksPage'
 import TranslationPage from './pages/TranslationPage'
 import type { User } from './types/auth'
 
@@ -47,6 +48,12 @@ const routes = [
     path: 'diff',
     title: '版本差分比较',
     description: '比较两个 tar.gz 版本包的 bin/lib 差异。',
+    status: '可验证',
+  },
+  {
+    path: 'tasks',
+    title: '任务历史',
+    description: '查看翻译、SPI 解析和版本差分的最近任务。',
     status: '可验证',
   },
 ]
@@ -109,6 +116,10 @@ function App() {
 
     if (activeRoute.path === 'diff') {
       return <DiffPage accessToken={accessToken} />
+    }
+
+    if (activeRoute.path === 'tasks') {
+      return <TasksPage accessToken={accessToken} />
     }
 
     return (

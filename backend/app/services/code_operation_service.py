@@ -13,6 +13,12 @@ from app.services.code_execution_service import CodeExecutionResult
 
 
 class CodeOperationService:
+    """Code Agent 待确认操作服务。
+
+    当 code agent 想删除既有文件或执行需要确认的命令时，不会立即执行，而是
+    创建一条 pending operation。前端展示确认卡片，用户确认后再回到这里执行。
+    """
+
     def __init__(
         self,
         conn: sqlite3.Connection,
@@ -35,6 +41,7 @@ class CodeOperationService:
         operation_type: str,
         payload: dict,
     ) -> CodeOperationRead:
+        """把 code agent 工具返回的 requires_confirmation 结果持久化。"""
         conversation = self.chats.get_conversation(conversation_id, owner_username)
         if conversation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
@@ -84,6 +91,11 @@ class CodeOperationService:
         return self._to_read(updated)
 
     def confirm_operation(self, owner_username: str, operation_id: str) -> CodeOperationRead:
+        """确认并执行 pending operation。
+
+        执行结果会写回 operation 表，同时追加一条 assistant 消息，让对话历史中
+        能看到“用户确认后的结果”。
+        """
         row = self.operations.get_for_owner(operation_id, owner_username)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending operation not found")

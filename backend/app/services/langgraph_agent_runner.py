@@ -10,12 +10,11 @@ class MissingAgentDependencyError(RuntimeError):
 
 
 class LangGraphAgentRunner:
-    """Thin LangGraph runner boundary.
+    """LangGraph runner 边界。
 
-    The production graph factory is injected so tests can verify this boundary
-    without importing LangGraph or calling real LLMs. When dependencies are not
-    installed, create_langgraph_agent_runner raises a clear error and callers can
-    fall back to RuleBasedAgentRunner.
+    AgentService 只依赖 AgentRunner 协议，不直接 import LangGraph。这里负责把
+    后端的 AgentRequest 转成 LangGraph 可识别的 messages/config，再把 graph
+    返回结果转成统一的 AgentResponse。
     """
 
     def __init__(
@@ -28,12 +27,22 @@ class LangGraphAgentRunner:
         self._graph = None
 
     def run(self, request: AgentRequest) -> AgentResponse:
+        """调用 LangGraph graph。
+
+        thread_id 使用 `用户:会话:agent` 组合，保证不同用户、不同会话、主/子
+        Agent 的记忆互不串线。
+        """
         graph = self._get_graph(request)
         payload = {
             "owner_username": request.owner_username,
             "conversation_id": request.conversation_id,
             "agent_name": request.agent_name,
-            "messages": [{"role": "user", "content": request.message}],
+            "messages": [
+                {"role": item.role, "content": item.content}
+                for item in request.history[-20:]
+                if item.role in {"user", "assistant"} and item.content.strip()
+            ]
+            + [{"role": "user", "content": request.message}],
             "system_prompt": self.system_prompt,
             "use_knowledge_base": request.use_knowledge_base,
         }
@@ -48,6 +57,7 @@ class LangGraphAgentRunner:
         return self._to_response(result)
 
     def _get_graph(self, request: AgentRequest):
+        """按用户会话懒创建 graph 实例，避免所有会话共享同一个内存 checkpointer。"""
         if self._graph is None:
             self._graph = {}
         key = f"{request.owner_username}:{request.conversation_id}:{request.agent_name}"
@@ -62,6 +72,7 @@ class LangGraphAgentRunner:
 
     @staticmethod
     def _to_response(result: object) -> AgentResponse:
+        """兼容 dict、AgentResponse 和普通对象三类 graph 返回值。"""
         if isinstance(result, AgentResponse):
             return result
         if isinstance(result, dict):

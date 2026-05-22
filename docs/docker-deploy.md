@@ -103,7 +103,6 @@ SEKI_TOKEN_SECRET_KEY
 如需启用真实 LangGraph Agent：
 
 ```text
-SEKI_AGENT_RUNNER="langgraph"
 SEKI_RAG_API_KEY="你的模型 key"
 ```
 

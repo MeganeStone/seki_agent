@@ -22,6 +22,12 @@ Translator = Callable[[str, str, str], str]
 
 
 class TranslationService:
+    """文档翻译任务服务。
+
+    新框架负责鉴权、任务表、文件表和执行器；真正的 Office 翻译能力暂时复用
+    `backend/legacy/tbox_custom_translator.py`，因此这里也是 legacy 迁移边界。
+    """
+
     def __init__(
         self,
         conn: sqlite3.Connection,
@@ -51,6 +57,7 @@ class TranslationService:
         target_language: str,
         api_key: str | None = None,
     ) -> TranslationTaskRead:
+        """创建翻译任务并提交后台执行。"""
         clean_target_language = target_language.strip()
         if not clean_target_language:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="target_language is required")
@@ -70,6 +77,11 @@ class TranslationService:
         target_language: str,
         api_key: str | None = None,
     ) -> None:
+        """在线程池执行时重新创建 SQLite 连接。
+
+        sqlite3.Connection 默认不能跨线程安全复用，所以后台线程里要重新 connect。
+        同步执行器则直接使用当前 service。
+        """
         if isinstance(self.task_executor, ThreadPoolTaskExecutor):
             conn = connect(self.db_path)
             try:
@@ -97,6 +109,7 @@ class TranslationService:
         target_language: str,
         api_key: str | None = None,
     ) -> None:
+        """执行单个翻译任务，并把成功/失败状态写回任务表。"""
         try:
             if self._is_cancelled(task_id, owner_username):
                 return
@@ -152,6 +165,7 @@ class TranslationService:
         return self._to_schema(row)
 
     def _load_legacy_translator(self) -> Translator:
+        """动态加载 legacy 翻译函数，避免把旧目录做成完整 Python 包。"""
         module_path = self.legacy_src_dir / "tbox_custom_translator.py"
         if not module_path.exists():
             raise RuntimeError("Legacy tbox_custom_translator.py not found")

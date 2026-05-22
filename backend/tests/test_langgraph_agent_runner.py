@@ -4,7 +4,6 @@ import os
 
 from app.services.agent_runner import AgentRequest, HandoffAgentRunner
 from app.services.agent_runner_factory import create_default_agent_runner
-from app.services.agent_tools import RagAgentTool
 from app.services.langgraph_agent_runner import (
     LangGraphAgentRunner,
     MissingAgentDependencyError,
@@ -190,14 +189,10 @@ def test_create_langgraph_runner_reports_missing_dependencies() -> None:
         create_langgraph_agent_runner()
 
 
-def test_default_runner_falls_back_when_langgraph_is_unavailable() -> None:
+def test_default_runner_uses_langgraph_boundary() -> None:
     runner = create_default_agent_runner(
         RagService(answerer=lambda question: {"answer": f"rag: {question}", "sources": []}),
-        prefer_langgraph=True,
     )
 
     assert isinstance(runner, HandoffAgentRunner)
-    if all(importlib.util.find_spec(module) for module in ("langgraph", "langchain", "langchain_openai")):
-        assert isinstance(runner.main_runner, LangGraphAgentRunner)
-    else:
-        assert isinstance(runner.main_runner.rag_tool, RagAgentTool)
+    assert isinstance(runner.main_runner, LangGraphAgentRunner)

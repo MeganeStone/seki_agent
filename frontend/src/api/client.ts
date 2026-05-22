@@ -1,6 +1,6 @@
 import type { LoginResponse } from '../types/auth'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://192.168.144.22:8000/api/v1'
 
 export type HealthResponse = {
   status: string
@@ -21,6 +21,7 @@ export async function login(username: string, password: string): Promise<LoginRe
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ username, password }),
+    credentials: 'include', // 发送请求时包含 cookie，以支持基于 cookie 的会话认证
   })
 
   if (!response.ok) {

@@ -3,6 +3,12 @@ from datetime import datetime, timezone
 
 
 class ChatRepository:
+    """对话和消息表仓储。
+
+    仓储层只负责 SQL 和行数据，不包含业务判断；用户归属过滤在 SQL 条件里完成，
+    上层 service 再决定不存在时返回什么 HTTP 错误。
+    """
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
@@ -67,3 +73,21 @@ class ChatRepository:
         )
         self.conn.commit()
 
+    def list_messages(
+        self,
+        conversation_id: str,
+        owner_username: str,
+        limit: int = 20,
+    ) -> list[sqlite3.Row]:
+        cursor = self.conn.execute(
+            """
+            SELECT id, conversation_id, owner_username, role, content, created_at
+            FROM chat_messages
+            WHERE conversation_id = ? AND owner_username = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (conversation_id, owner_username, max(1, min(limit, 100))),
+        )
+        rows = list(cursor.fetchall())
+        return list(reversed(rows))

@@ -21,6 +21,7 @@ export type SendChatMessagePayload = {
   message: string
   use_knowledge_base: boolean
   api_key?: string
+  web_search_api_key?: string
 }
 
 export type ChatTurn = {

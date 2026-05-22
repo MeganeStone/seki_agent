@@ -28,10 +28,11 @@ def create_tbox_langgraph_agent(
     include_code_handoff_tool: bool = True,
     code_agent_name: str = "code_agent",
 ):
-    """Create the LangGraph-backed TBOX agent graph.
+    """创建主 TBOX/Seki LangGraph Agent。
 
-    Model and checkpointer factories are injectable so tests can validate the
-    graph factory without calling real external models.
+    这里只负责“把模型、系统 prompt、工具、记忆 checkpointer 装配成 graph”。
+    model_factory/checkpointer_factory 可注入，是为了单元测试不需要真实访问模型服务。
+    运行时默认使用千问兼容 OpenAI 接口和 LangGraph InMemorySaver。
     """
 
     from langchain.agents import create_agent
@@ -64,6 +65,7 @@ def create_tbox_langgraph_agent(
         owner_username=owner_username,
     )
     if include_code_handoff_tool:
+        # 主 Agent 自己不直接执行代码类高风险操作，而是通过 handoff 交给 code agent。
         tools.append(create_transfer_to_code_agent_tool(code_agent_name=code_agent_name))
 
     return create_agent(

@@ -10,17 +10,31 @@ from app.services.agent_tools import (
     RagAgentTool,
     SpiAgentTool,
     TranslationAgentTool,
+    WebSearchAgentTool,
 )
 
 
 @dataclass(frozen=True)
+class ChatHistoryMessage:
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
 class AgentRequest:
+    """一次 Agent 调用所需的完整上下文。
+
+    注意 api_key/web_search_api_key 是本次请求临时 key，只在调用模型或搜索服务时
+    临时放入环境变量，不会写入聊天消息表。
+    """
     owner_username: str
     conversation_id: str
     message: str
     use_knowledge_base: bool = True
     agent_name: str = "main_agent"
     api_key: str | None = None
+    web_search_api_key: str | None = None
+    history: tuple[ChatHistoryMessage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,7 +69,11 @@ class CodeAgentUnavailableRunner:
 
 
 class HandoffAgentRunner:
-    """Routes requests between the main agent and isolated sub-agents."""
+    """在主 Agent 和隔离子 Agent 之间路由请求。
+
+    当前生产路径主要依赖 LangGraph 自己的 handoff 工具；这个包装保留为明确的
+    Python 边界，方便测试或以后把 code_agent 放到独立服务。
+    """
 
     def __init__(
         self,
@@ -98,23 +116,24 @@ class HandoffAgentRunner:
 
 
 class RuleBasedAgentRunner:
-    """Temporary deterministic runner for Agent wiring tests.
+    """测试用的确定性 runner。
 
-    This runner keeps orchestration testable before the real LangGraph runner is
-    introduced. It routes explicit tool requests by simple text patterns and
-    delegates everything else to RAG when knowledge base usage is enabled.
+    生产默认不再使用 rule runner。它保留在这里，是为了单元测试能不依赖真实
+    LLM，直接验证 Chat API、工具适配和消息落库等外围链路。
     """
 
     def __init__(
         self,
         rag_tool: RagAgentTool,
         chat_tool: ChatAgentTool | None = None,
+        web_search_tool: WebSearchAgentTool | None = None,
         translation_tool: TranslationAgentTool | None = None,
         spi_tool: SpiAgentTool | None = None,
         diff_tool: DiffAgentTool | None = None,
     ):
         self.rag_tool = rag_tool
         self.chat_tool = chat_tool
+        self.web_search_tool = web_search_tool
         self.translation_tool = translation_tool
         self.spi_tool = spi_tool
         self.diff_tool = diff_tool
@@ -143,10 +162,17 @@ class RuleBasedAgentRunner:
                 result = self.diff_tool(request.owner_username, left_file_id, right_file_id)
                 return self._from_tool_result(result, route="diff")
 
+        if self.web_search_tool and self._looks_like_web_search(message):
+            web_search_service = getattr(self.web_search_tool, "web_search_service", None)
+            if hasattr(web_search_service, "set_request_api_key"):
+                web_search_service.set_request_api_key(request.web_search_api_key)
+            result = self.web_search_tool(message)
+            return self._from_tool_result(result, route="web_search")
+
         if not request.use_knowledge_base:
             if self.chat_tool is None:
                 return AgentResponse(answer="知识库已禁用，当前 Agent runner 未配置普通聊天模型。", route="direct")
-            result = self.chat_tool(message, api_key=request.api_key)
+            result = self.chat_tool(message, api_key=request.api_key, history=request.history)
             return self._from_tool_result(result, route="direct")
 
         with temporary_env_api_key("SEKI_RAG_API_KEY", request.api_key):
@@ -177,6 +203,19 @@ class RuleBasedAgentRunner:
     def _looks_like_diff(message: str) -> bool:
         lowered = message.lower()
         return "diff" in lowered or "差分" in message or "比较" in message
+
+    @staticmethod
+    def _looks_like_web_search(message: str) -> bool:
+        lowered = message.lower()
+        return (
+            "web_search" in lowered
+            or "联网" in message
+            or "上网" in message
+            or "搜索" in message
+            or "最新" in message
+            or "新闻" in message
+            or "公开资料" in message
+        )
 
     @staticmethod
     def _extract_value(message: str, key: str) -> str | None:

@@ -40,11 +40,11 @@ class CommandPolicyDecision:
 
 
 class CodeExecutionService:
-    """Restricted local file service for the code agent stage A.
+    """Code Agent 使用的受限本地执行服务。
 
-    Stage A intentionally does not expose shell execution or deletion. It only
-    supports listing directories, reading small text files, and writing text
-    files with explicit overwrite.
+    这一层是 code agent 的安全边界：所有路径都必须落在 allowed_roots 内，
+    敏感文件会被拒绝，命令也必须匹配白名单或进入 pending confirmation。
+    这样模型可以帮助读写项目文件，但不能随意访问系统目录或执行任意 shell。
     """
 
     def __init__(
@@ -100,6 +100,7 @@ class CodeExecutionService:
         conversation_id: str = "",
         agent_name: str = "code_agent",
     ) -> CodeExecutionResult:
+        """列出允许目录内的文件，返回给 code agent 用于探索项目结构。"""
         started_at = self._now()
         target = ""
         try:
@@ -159,6 +160,7 @@ class CodeExecutionService:
         conversation_id: str = "",
         agent_name: str = "code_agent",
     ) -> CodeExecutionResult:
+        """创建目录；父目录必须已存在且位于允许根目录内。"""
         started_at = self._now()
         target = ""
         try:
@@ -182,7 +184,6 @@ class CodeExecutionService:
                     agent_name,
                     data={
                         "path": path,
-                        "recursive": recursive,
                         "requires_confirmation": True,
                     },
                 )
@@ -220,6 +221,11 @@ class CodeExecutionService:
         agent_name: str = "code_agent",
         confirmed: bool = False,
     ) -> CodeExecutionResult:
+        """删除文件或目录。
+
+        为降低误删风险，只有 code agent 本轮新建的路径可直接删除；既有路径会
+        返回 requires_confirmation，由前端展示确认卡片后再执行。
+        """
         started_at = self._now()
         target = ""
         try:
@@ -313,6 +319,11 @@ class CodeExecutionService:
         conversation_id: str = "",
         agent_name: str = "code_agent",
     ) -> CodeExecutionResult:
+        """执行命令白名单内的命令。
+
+        这里不接受完整 shell 字符串，只接受 command + args，并在 CommandPolicy
+        中拒绝管道、重定向、命令拼接等控制符，避免模型绕过命令策略。
+        """
         started_at = self._now()
         target = ""
         try:

@@ -23,6 +23,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_auth_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> AuthService:
+    """创建认证服务；每个请求复用同一个 SQLite 连接依赖。"""
     return AuthService(conn)
 
 
@@ -41,6 +42,11 @@ def get_code_operation_service(
 
 
 def get_task_executor(request: Request) -> TaskExecutor:
+    """从 FastAPI app.state 读取后台任务执行器。
+
+    lifespan 启动失败或测试未挂载 lifespan 时，降级到同步执行器，保证业务
+    service 仍能被单元测试直接调用。
+    """
     return getattr(request.app.state, "task_executor", SynchronousTaskExecutor())
 
 
@@ -77,6 +83,11 @@ def get_agent_service(
     spi_service: Annotated[SpiService, Depends(get_spi_service)],
     diff_service: Annotated[DiffService, Depends(get_diff_service)],
 ) -> AgentService:
+    """组装 AgentService 依赖。
+
+    Chat API 不直接知道 RAG、翻译、SPI、diff 的实现细节，而是通过这里把
+    各 service 注入给 AgentService，再由 LangGraph runner 决定是否调用工具。
+    """
     return AgentService(
         conn,
         rag_service=rag_service,
@@ -91,6 +102,11 @@ def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> UserRead:
+    """解析 Bearer Token 并返回当前登录用户。
+
+    这里是所有需要登录接口的统一鉴权入口：缺 token、token 无效、用户不存在
+    都返回 401，业务接口无需重复处理认证细节。
+    """
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 

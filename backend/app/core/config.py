@@ -8,6 +8,12 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
+    """后端统一配置对象。
+
+    所有 `SEKI_` 前缀的环境变量都会映射到这里。业务代码只依赖 Settings，
+    不直接到处读取 `.env`，这样测试时可以更容易替换配置，也便于之后迁移到
+    Docker、K8s 或配置中心。
+    """
     app_name: str = "Seki Agent API"
     app_version: str = "0.1.0"
     debug: bool = False
@@ -28,8 +34,10 @@ class Settings(BaseSettings):
     rag_api_key: str | None = None
     rag_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     rag_model_name: str = "qwen-plus"
-    agent_runner: str = "rule"
-    agent_enable_keyword_handoff: bool = False
+    web_search_api_key: str | None = None
+    web_search_api_url: str = "https://open.feedcoopapi.com/search_api/web_search"
+    web_search_timeout_seconds: float = 30.0
+    web_search_max_summary_chars: int = 4000
     task_executor: str = "sync"
     task_executor_max_workers: int = 3
     code_agent_allowed_roots: list[Path] | None = None
@@ -41,7 +49,12 @@ class Settings(BaseSettings):
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "http://192.168.144.22:5173",  # 支持局域网 IP 的 CORS 白名单
+        "http://192.168.144.22:8000",  # 支持局域网 IP 的 CORS 白名单
     ]
+
+    # 如果需要支持任意局域网 IP + 任意端口，使用正则表达式并在中间件中传给 `allow_origin_regex`。
+    cors_origin_regex: str | None = r"^http://192\.168\.\d{1,3}\.\d{1,3}:\d+$"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -53,4 +66,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """返回缓存后的配置实例。
+
+    配置读取会解析路径、列表和布尔值，缓存可以避免每次请求重复解析环境变量。
+    测试如需替换配置，可清理这个 cache 后重新构造。
+    """
     return Settings()

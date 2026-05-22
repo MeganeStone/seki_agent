@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import ChatMessageResponse, ConversationCreateResponse
-from app.services.agent_runner import AgentRequest, AgentRunner
+from app.services.agent_runner import AgentRequest, AgentRunner, ChatHistoryMessage
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.code_operation_service import CodeOperationService
 from app.services.diff_service import DiffService
@@ -16,11 +16,11 @@ from app.services.translation_service import TranslationService
 
 
 class AgentService:
-    """Conversation boundary for the user-facing Agent entrypoint.
+    """面向前端 Chat API 的 Agent 对话边界。
 
-    The first implementation delegates answer generation to RagService. Keeping
-    this boundary separate lets us add LangGraph orchestration and tool routing
-    without changing the Chat API or frontend contract.
+    这一层负责校验会话归属、持久化 user/assistant 消息、整理历史上下文，
+    然后把真正的推理和工具调用交给 AgentRunner。这样以后替换 LangGraph、
+    增加流式协议或接入更多工具时，不需要改前端 API 契约。
     """
 
     def __init__(
@@ -47,6 +47,7 @@ class AgentService:
         )
 
     def create_conversation(self, owner_username: str) -> ConversationCreateResponse:
+        """为指定用户创建会话记录，conversation_id 使用随机 uuid hex。"""
         conversation_id = uuid4().hex
         row = self.chats.create_conversation(conversation_id, owner_username)
         return ConversationCreateResponse(conversation_id=row["id"], created_at=row["created_at"])
@@ -58,7 +59,15 @@ class AgentService:
         message: str,
         use_knowledge_base: bool = True,
         api_key: str | None = None,
+        web_search_api_key: str | None = None,
     ) -> ChatMessageResponse:
+        """执行一次 Agent 问答并落库。
+
+        处理顺序很重要：
+        1. 先读取历史，再写入本轮 user 消息，避免本轮消息在 history 中重复出现。
+        2. runner 返回 pending 操作时，把它持久化到 code_operations，前端才能确认。
+        3. assistant 最终回答始终写入聊天记录，保证下一轮 Agent 有记忆。
+        """
         clean_message = message.strip()
         if not clean_message:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message is required")
@@ -67,6 +76,10 @@ class AgentService:
         if conversation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
+        history = tuple(
+            ChatHistoryMessage(role=row["role"], content=row["content"])
+            for row in self.chats.list_messages(conversation_id, owner_username, limit=20)
+        )
         self.chats.add_message(uuid4().hex, conversation_id, owner_username, "user", clean_message)
         result = self.runner.run(
             AgentRequest(
@@ -75,6 +88,8 @@ class AgentService:
                 message=clean_message,
                 use_knowledge_base=use_knowledge_base,
                 api_key=api_key.strip() if api_key else None,
+                web_search_api_key=web_search_api_key.strip() if web_search_api_key else None,
+                history=history,
             )
         )
         answer = result.answer

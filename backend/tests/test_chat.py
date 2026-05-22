@@ -26,23 +26,34 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 def client(test_db: sqlite3.Connection) -> TestClient:
     app = create_app()
 
-    def override_auth_service() -> AuthService:
-        return AuthService(test_db)
-
-    def override_agent_service() -> AgentService:
-        def fake_answerer(question: str) -> dict:
-            return {
-                "answer": f"answer for: {question}",
-                "sources": [
+    class FakeRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer=f"answer for: {request.message}",
+                sources=[
                     {
                         "file_name": "manual.pdf",
                         "page_number": 3,
                         "snippet": "source snippet",
                     }
                 ],
-            }
+                data={
+                    "sources": [
+                        {
+                            "file_name": "manual.pdf",
+                            "page_number": 3,
+                            "snippet": "source snippet",
+                        }
+                    ]
+                },
+                route="rag",
+            )
 
-        return AgentService(test_db, rag_service=RagService(answerer=fake_answerer))
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_agent_service() -> AgentService:
+        return AgentService(test_db, rag_service=RagService(answerer=lambda question: "unused"), runner=FakeRunner())
 
     app.dependency_overrides[get_auth_service] = override_auth_service
     app.dependency_overrides[get_agent_service] = override_agent_service
@@ -90,6 +101,25 @@ def test_create_conversation_and_send_message(client: TestClient, test_db: sqlit
             }
         ]
     }
+
+
+def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, test_db: sqlite3.Connection) -> None:
+    headers = auth_headers(client, test_db)
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    with client.stream(
+        "POST",
+        f"/api/v1/chat/conversations/{conversation_id}/messages/stream",
+        headers=headers,
+        json={"message": "什么是 TSU？", "use_knowledge_base": True},
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert "event: delta" in body
+    assert "event: final" in body
+    assert '"answer":"answer for: 什么是 TSU？"' in body
 
 
 def test_chat_conversations_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
@@ -157,3 +187,35 @@ def test_chat_accepts_request_api_key(test_db: sqlite3.Connection) -> None:
 
     assert response.status_code == 200
     assert seen_requests[0].api_key == "request-key"
+
+
+def test_chat_accepts_request_web_search_api_key(test_db: sqlite3.Connection) -> None:
+    app = create_app()
+    seen_requests: list[AgentRequest] = []
+
+    class RecordingRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            seen_requests.append(request)
+            return AgentResponse(answer="ok", route="web_search")
+
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_agent_service() -> AgentService:
+        return AgentService(test_db, runner=RecordingRunner())
+
+    app.dependency_overrides[get_auth_service] = override_auth_service
+    app.dependency_overrides[get_agent_service] = override_agent_service
+    client = TestClient(app)
+    headers = auth_headers(client, test_db)
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"message": "hello", "use_knowledge_base": True, "web_search_api_key": "volc-key"},
+    )
+
+    assert response.status_code == 200
+    assert seen_requests[0].web_search_api_key == "volc-key"

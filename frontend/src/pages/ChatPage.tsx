@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { createConversation, sendChatMessage } from '../api/chat'
+import { createConversation, sendChatMessage, streamChatMessage } from '../api/chat'
 import { cancelCodeOperation, confirmCodeOperation, listCodeOperations } from '../api/codeOperations'
 import { getDiffTask } from '../api/diff'
 import { downloadFile } from '../api/files'
@@ -14,6 +14,7 @@ type ChatPageProps = {
 }
 
 function stringValue(data: Record<string, unknown>, key: string): string | null {
+  // 工具返回的 data 是开放结构，前端展示前统一做类型收窄，避免渲染时报错。
   const value = data[key]
   if (value === null || value === undefined || value === '') return null
   return String(value)
@@ -84,11 +85,14 @@ function operationTarget(operation: CodeOperation): string | null {
 }
 
 function ChatPage({ accessToken }: ChatPageProps) {
+  // ChatPage 同时承担普通对话、工具任务展示、code agent 待确认操作三个职责。
+  // 这些状态暂时保留在页面内，等交互稳定后再考虑拆成更小组件。
   const [conversationId, setConversationId] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [message, setMessage] = useState('')
   const [useKnowledgeBase, setUseKnowledgeBase] = useState(true)
   const [apiKey, setApiKey] = useState('')
+  const [webSearchApiKey, setWebSearchApiKey] = useState('')
   const [loading, setLoading] = useState(false)
   const [activeToolTurnId, setActiveToolTurnId] = useState('')
   const [activeOperationId, setActiveOperationId] = useState('')
@@ -101,6 +105,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
   ])
 
   async function ensureConversation(): Promise<string> {
+    // 会话采用懒创建：用户第一次发送消息时才向后端创建 conversation。
     if (conversationId) return conversationId
     if (!accessToken) throw new Error('请先登录')
 
@@ -124,23 +129,72 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
     try {
       const activeConversationId = await ensureConversation()
-      const response = await sendChatMessage(accessToken, activeConversationId, {
-        message: userMessage,
-        use_knowledge_base: useKnowledgeBase,
-        api_key: apiKey.trim() || undefined,
-      })
+      const assistantTurnId = crypto.randomUUID()
       setTurns((current) => [
         ...current,
         {
-          id: crypto.randomUUID(),
+          id: assistantTurnId,
           role: 'assistant',
-          content: response.answer,
-          sources: response.sources,
-          route: response.route,
-          data: response.data,
-          pendingOperation: pendingOperationFromData(response.data),
+          content: '',
+          route: 'streaming',
         },
       ])
+
+      const payload = {
+        message: userMessage,
+        use_knowledge_base: useKnowledgeBase,
+        api_key: apiKey.trim() || undefined,
+        web_search_api_key: webSearchApiKey.trim() || undefined,
+      }
+      let receivedStreamContent = false
+      try {
+        // 优先走 SSE。若浏览器/代理不支持或后端流失败，再回退到普通 POST。
+        await streamChatMessage(accessToken, activeConversationId, payload, {
+          onDelta: (text) => {
+            receivedStreamContent = true
+            setTurns((current) =>
+              current.map((turn) =>
+                turn.id === assistantTurnId ? { ...turn, content: `${turn.content}${text}` } : turn,
+              ),
+            )
+          },
+          onFinal: (response) => {
+            setTurns((current) =>
+              current.map((turn) =>
+                turn.id === assistantTurnId
+                  ? {
+                      ...turn,
+                      content: response.answer,
+                      sources: response.sources,
+                      route: response.route,
+                      data: response.data,
+                      pendingOperation: pendingOperationFromData(response.data),
+                    }
+                  : turn,
+              ),
+            )
+          },
+        })
+      } catch (streamError) {
+        if (receivedStreamContent) {
+          throw streamError
+        }
+        const response = await sendChatMessage(accessToken, activeConversationId, payload)
+        setTurns((current) =>
+          current.map((turn) =>
+            turn.id === assistantTurnId
+              ? {
+                  ...turn,
+                  content: response.answer,
+                  sources: response.sources,
+                  route: response.route,
+                  data: response.data,
+                  pendingOperation: pendingOperationFromData(response.data),
+                }
+              : turn,
+          ),
+        )
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : '消息发送失败')
     } finally {
@@ -218,6 +272,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
   }
 
   async function handleRefreshPendingOperations() {
+    // code agent 需要确认的操作可能来自历史回答，刷新时会把后端 pending 列表合并回对话流。
     if (!accessToken || !conversationId) return
 
     setError('')
@@ -440,7 +495,14 @@ function ChatPage({ accessToken }: ChatPageProps) {
         <input
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
-          placeholder="临时 API key（可选，后端环境配置优先生效）"
+          placeholder="千问 API key（可选，后端环境配置优先生效）"
+          type="password"
+          autoComplete="off"
+        />
+        <input
+          value={webSearchApiKey}
+          onChange={(event) => setWebSearchApiKey(event.target.value)}
+          placeholder="火山搜索 API key（可选，后端环境配置优先生效）"
           type="password"
           autoComplete="off"
         />

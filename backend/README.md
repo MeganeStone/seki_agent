@@ -54,16 +54,29 @@ Unknown commands that do not match either list become pending operations, but
 will not execute after confirmation until a matching confirmed prefix is
 configured. Dangerous commands and shell control operators are still rejected.
 
-For local debugging, the rule runner can route obvious code/script/file
-requests to `code_agent` by keyword:
+The runtime Agent path is LangGraph, where the main agent decides handoff
+through tools instead of backend keyword guesses. `RuleBasedAgentRunner` is
+kept only for unit tests and narrow local debugging by explicit injection.
+
+Web search uses the old Volc/Feedcoop-compatible provider when a key is
+available:
 
 ```env
-SEKI_AGENT_ENABLE_KEYWORD_HANDOFF=true
+SEKI_WEB_SEARCH_API_KEY=your-volc-key
+SEKI_WEB_SEARCH_API_URL=https://open.feedcoopapi.com/search_api/web_search
 ```
 
-Keep this off in production-like runs. The intended production path is
-`SEKI_AGENT_RUNNER=langgraph`, where the main agent decides handoff through
-tools instead of backend keyword guesses.
+If the environment key is empty, the Agent page can send a temporary Volc key
+for the current request. The temporary key is not stored in chat messages.
+
+LangSmith tracing should use the native LangChain/LangGraph environment
+variables so tool/model/graph spans are captured without custom wrappers:
+
+```env
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=seki-agent-local
+```
 
 Health check:
 

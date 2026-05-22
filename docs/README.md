@@ -25,14 +25,15 @@
 ## 文档清单
 
 - [需求澄清清单](./requirements-questions.md)
+- [正式需求文档](./requirements.md)
+- [目标架构设计](./architecture.md)
+- [API 设计](./api-design.md)
 - [阶段性实施计划](./refactor-roadmap.md)
 - [Agent 迁移计划](./agent-migration-plan.md)
 - [当前上下文摘要](./current-context.md)
+- [当前实现状态总览](./implementation-status.md)
+- [文件结构说明](./file-structure.md)
+- [使用说明书](./user-guide.md)
 
-后续确认需求后，将继续补充：
-
-- `requirements.md`：正式需求文档。
-- `architecture.md`：目标架构设计文档。
-- `api-design.md`：前后端 API 设计文档。
-- `test-strategy.md`：测试策略与模块测试边界。
-- `deployment.md`：本地、测试、生产部署说明。
+说明：`refactor-roadmap.md` 保留历史迭代记录；如果只想了解当前代码状态和下一步，
+优先阅读 `implementation-status.md`、`file-structure.md`、`user-guide.md`。

@@ -21,19 +21,14 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_agent_service_delegates_to_rag_and_records_messages(test_db: sqlite3.Connection) -> None:
-    def fake_answerer(question: str) -> dict:
-        return {
-            "answer": f"agent answer: {question}",
-            "sources": [{"file_name": "manual.pdf", "page_number": 1, "snippet": "hello"}],
-        }
-
-    service = AgentService(test_db, rag_service=RagService(answerer=fake_answerer))
+    runner = FakeRunner()
+    service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
 
     response = service.ask("alice", conversation.conversation_id, "什么是 TSU？")
 
-    assert response.answer == "agent answer: 什么是 TSU？"
-    assert response.sources[0].file_name == "manual.pdf"
+    assert response.answer == "runner answer: 什么是 TSU？"
+    assert response.route == "test-route"
 
     rows = test_db.execute(
         """
@@ -46,7 +41,7 @@ def test_agent_service_delegates_to_rag_and_records_messages(test_db: sqlite3.Co
     ).fetchall()
     assert [(row["role"], row["content"]) for row in rows] == [
         ("user", "什么是 TSU？"),
-        ("assistant", "agent answer: 什么是 TSU？"),
+        ("assistant", "runner answer: 什么是 TSU？"),
     ]
 
 
@@ -133,15 +128,24 @@ def test_agent_service_passes_request_api_key_to_runner(test_db: sqlite3.Connect
     assert runner.requests[0].api_key == "request-key"
 
 
-def test_agent_service_default_runner_can_chat_without_knowledge_base(test_db: sqlite3.Connection, monkeypatch) -> None:
-    from app.services import agent_runner_factory
+def test_agent_service_passes_web_search_api_key_to_runner(test_db: sqlite3.Connection) -> None:
+    runner = FakeRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
 
-    class FakeChatModelService:
-        def answer(self, message: str, api_key: str | None = None) -> dict:
-            return {"answer": f"chat answer: {message}:{api_key}", "sources": []}
+    service.ask(
+        "alice",
+        conversation.conversation_id,
+        "请联网搜索",
+        web_search_api_key="volc-key",
+    )
 
-    monkeypatch.setattr(agent_runner_factory, "ChatModelService", lambda: FakeChatModelService())
-    service = AgentService(test_db, rag_service=RagService(answerer=lambda question: "rag"))
+    assert runner.requests[0].web_search_api_key == "volc-key"
+
+
+def test_agent_service_injected_runner_can_chat_without_knowledge_base(test_db: sqlite3.Connection) -> None:
+    runner = FakeRunner()
+    service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
 
     response = service.ask(
@@ -152,8 +156,24 @@ def test_agent_service_default_runner_can_chat_without_knowledge_base(test_db: s
         api_key="request-key",
     )
 
-    assert response.route == "direct"
-    assert response.answer == "chat answer: hello:request-key"
+    assert response.route == "test-route"
+    assert response.answer == "runner answer: hello"
+    assert runner.requests[0].use_knowledge_base is False
+
+
+def test_agent_service_passes_recent_conversation_history_to_runner(test_db: sqlite3.Connection) -> None:
+    runner = FakeRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "第一句")
+    service.ask("alice", conversation.conversation_id, "第二句")
+
+    assert [item.role for item in runner.requests[1].history] == ["user", "assistant"]
+    assert [item.content for item in runner.requests[1].history] == [
+        "第一句",
+        "runner answer: 第一句",
+    ]
 
 
 class FakeTask:
@@ -198,12 +218,14 @@ class FakeDiffService:
         return FakeTask("diff-task")
 
 
-def test_agent_service_default_runner_can_route_translation_tool(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_can_return_translation_tool_data(test_db: sqlite3.Connection) -> None:
     translation_service = FakeTranslationService()
+    runner = FakeRunner()
     service = AgentService(
         test_db,
         rag_service=RagService(answerer=lambda question: "rag"),
         translation_service=translation_service,
+        runner=runner,
     )
     conversation = service.create_conversation("alice")
 
@@ -213,45 +235,41 @@ def test_agent_service_default_runner_can_route_translation_tool(test_db: sqlite
         "请翻译 file_id=file-1 target_language=英语",
     )
 
-    assert "翻译任务已创建" in response.answer
-    assert response.route == "translation"
+    assert response.answer == "runner answer: 请翻译 file_id=file-1 target_language=英语"
+    assert response.route == "test-route"
     assert response.data == {
-        "task_id": "translation-task",
+        "task_id": "runner-task",
         "status": "succeeded",
-        "result_file_id": "result-file",
-        "error": None,
     }
-    assert translation_service.calls == [("alice", "file-1", "英语", None)]
+    assert translation_service.calls == []
 
 
-def test_agent_service_default_runner_can_route_spi_tool(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_keeps_spi_request_boundary(test_db: sqlite3.Connection) -> None:
     spi_service = FakeSpiService()
+    runner = FakeRunner()
     service = AgentService(
         test_db,
         rag_service=RagService(answerer=lambda question: "rag"),
         spi_service=spi_service,
+        runner=runner,
     )
     conversation = service.create_conversation("alice")
 
     response = service.ask("alice", conversation.conversation_id, "解析 SPI file_id=log-1")
 
-    assert "SPI 解析任务已创建" in response.answer
-    assert response.route == "spi"
-    assert response.data == {
-        "task_id": "spi-task",
-        "status": "succeeded",
-        "result_file_id": "result-file",
-        "error": None,
-    }
-    assert spi_service.calls == [("alice", "log-1")]
+    assert response.route == "test-route"
+    assert runner.requests[0].message == "解析 SPI file_id=log-1"
+    assert spi_service.calls == []
 
 
-def test_agent_service_default_runner_can_route_diff_tool(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_keeps_diff_request_boundary(test_db: sqlite3.Connection) -> None:
     diff_service = FakeDiffService()
+    runner = FakeRunner()
     service = AgentService(
         test_db,
         rag_service=RagService(answerer=lambda question: "rag"),
         diff_service=diff_service,
+        runner=runner,
     )
     conversation = service.create_conversation("alice")
 
@@ -261,13 +279,6 @@ def test_agent_service_default_runner_can_route_diff_tool(test_db: sqlite3.Conne
         "比较版本 left_file_id=old-1 right_file_id=new-1",
     )
 
-    assert "版本差分任务已创建" in response.answer
-    assert response.route == "diff"
-    assert response.data == {
-        "task_id": "diff-task",
-        "status": "succeeded",
-        "summary": None,
-        "result_file_id": "result-file",
-        "error": None,
-    }
-    assert diff_service.calls == [("alice", "old-1", "new-1")]
+    assert response.route == "test-route"
+    assert runner.requests[0].message == "比较版本 left_file_id=old-1 right_file_id=new-1"
+    assert diff_service.calls == []

@@ -307,6 +307,12 @@ code {
   padding: 18px;
 }
 
+.chat-page {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  height: calc(100vh - 136px);
+  min-height: 560px;
+}
+
 .files-toolbar,
 .task-toolbar,
 .chat-toolbar,
@@ -549,6 +555,7 @@ code {
   display: grid;
   gap: 12px;
   min-height: 280px;
+  overflow-y: auto;
   align-content: start;
   padding: 14px;
   border: 1px solid #dfe5ee;
@@ -695,6 +702,16 @@ code {
   font: inherit;
 }
 
+.chat-input input {
+  min-width: 0;
+  min-height: 38px;
+  border-radius: 8px;
+  border: 1px solid #cfd7e3;
+  padding: 0 10px;
+  color: #1c2331;
+  font: inherit;
+}
+
 .toggle-line {
   display: inline-flex;
   align-items: center;
@@ -768,6 +785,11 @@ code {
 
   .chat-input {
     grid-template-columns: 1fr;
+  }
+
+  .chat-page {
+    height: calc(100vh - 120px);
+    min-height: 520px;
   }
 
   .file-table {

@@ -10,6 +10,11 @@ from app.core.config import get_settings
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
+    """使用 PBKDF2-HMAC-SHA256 哈希密码。
+
+    返回格式为 `salt$digest`，不依赖额外认证库，方便当前内部工具快速落地。
+    生产环境如接入统一身份系统，可在 AuthService 边界替换实现。
+    """
     if salt is None:
         salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
@@ -17,6 +22,7 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
 
 
 def verify_password(password: str, stored_value: str) -> bool:
+    """校验明文密码和数据库中的哈希值。"""
     try:
         salt_hex, digest_hex = stored_value.split("$", 1)
         salt = bytes.fromhex(salt_hex)
@@ -43,6 +49,11 @@ def _sign(message: str, secret: str) -> str:
 
 
 def create_access_token(subject: str) -> str:
+    """创建一个轻量自签名访问 token。
+
+    当前 token 结构类似 JWT，但只包含 payload.signature 两段；对内部工具足够简单。
+    如后续接入 OAuth/JWT 标准库，可以保持外层 Bearer 认证契约不变。
+    """
     settings = get_settings()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {
@@ -55,6 +66,7 @@ def create_access_token(subject: str) -> str:
 
 
 def decode_access_token(token: str) -> dict[str, Any] | None:
+    """解析并校验访问 token，失败时统一返回 None。"""
     settings = get_settings()
     try:
         encoded_payload, signature = token.split(".", 1)
@@ -81,4 +93,3 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
     return payload
-

@@ -329,7 +329,7 @@ MVP 可以先不做确认 API，只把 Confirm 类操作拒绝并提示“该操
   - `code_delete_path`
   - `transfer_to_main_agent`
 - 父级 multi-agent graph 已支持真实 code agent graph，而不是只能调用 `CodeAgentUnavailableRunner` 占位。
-- 默认 runner 在 `SEKI_AGENT_RUNNER=langgraph` 时会创建 main agent graph + code agent graph。
+- 默认 runner 会创建 main agent graph + code agent graph。
 
 仍然保持：
 
@@ -501,14 +501,9 @@ SEKI_CODE_AGENT_CONFIRMED_COMMAND_PREFIXES='["python --version"]'
 
 ## 21. Agent 入口本地测试方式
 
-为避免前端 Agent 入口只能返回占位提示，已新增普通聊天 fallback：
+Agent 入口默认运行时已收敛为 LangGraph，不再通过环境变量切换到 rule runner，也不再通过关键词猜测 code_agent handoff。
 
-- 前端关闭“使用知识库 / RAG”时，默认 rule runner 会调用普通聊天模型。
+- 前端关闭“使用知识库 / RAG”时，仍由 LangGraph Agent 和系统 prompt 判断是否普通聊天。
 - API key 仍遵循环境配置优先，其次使用前端临时 key。
-- 如果需要在不启用 LangGraph 的本地环境临时测试 code_agent 路由，可设置：
-
-```env
-SEKI_AGENT_ENABLE_KEYWORD_HANDOFF=true
-```
-
-该开关只用于本地调试。生产主路径仍应使用 LangGraph handoff，让 agent 自己通过工具决定是否交接到 code_agent。
+- `RuleBasedAgentRunner` 仅保留为单元测试/显式注入调试构件，不作为本地运行入口。
+- code_agent 交接应由 LangGraph Agent 通过 `transfer_to_code_agent` 工具决定。

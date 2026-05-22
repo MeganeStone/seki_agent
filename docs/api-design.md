@@ -191,7 +191,8 @@ file=<binary>
 {
   "message": "请解释某个 TSU 功能",
   "use_knowledge_base": true,
-  "api_key": "可选，环境未配置时使用"
+  "api_key": "可选千问临时 key，环境未配置时使用",
+  "web_search_api_key": "可选火山搜索临时 key，环境未配置时使用"
 }
 ```
 
@@ -238,9 +239,32 @@ file=<binary>
 }
 ```
 
+### POST /chat/conversations/{conversation_id}/messages/stream
+
+用途：发送用户问题并以 SSE 形式流式返回回答。
+
+请求体与非流式发送消息一致：
+
+```json
+{
+  "message": "什么是 TSU？",
+  "use_knowledge_base": true,
+  "api_key": "可选千问临时 key，环境未配置时使用",
+  "web_search_api_key": "可选火山搜索临时 key，环境未配置时使用"
+}
+```
+
+响应类型：`text/event-stream`。
+
+事件：
+
+- `event: delta`：增量文本片段，`data` 为 `{"text":"..."}`。
+- `event: final`：完整 `ChatMessageResponse`，包含 `conversation_id`、`answer`、`sources`、`route`、`data`。
+
+当前实现用于前端增量展示；后端仍先完成一次 Agent 调用，再将 answer 分片输出。后续可在同一接口契约下升级为真实模型 token 流。
+
 后续可扩展：
 
-- SSE 流式回答接口。
 - 对话历史接口。
 - 答案评价接口。
 

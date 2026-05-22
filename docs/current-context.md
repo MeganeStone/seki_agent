@@ -25,8 +25,8 @@
 - `rag`：当前最小 RAG 回答能力，懒加载新框架收敛后的 `backend/legacy/rag.py`、`backend/legacy/vector_db.py`。
 - `agent_service`：Chat API 背后的 Agent 入口边界。
 - `agent_tools`：RAG、translation、SPI、diff 的 tool adapter。
-- `agent_runner`：`AgentRunner` 协议和 `RuleBasedAgentRunner`。
-- `langgraph_agent_runner`：可选 LangGraph runner 最小边界，支持 fake graph 测试。
+- `agent_runner`：`AgentRunner` 协议、测试用 `RuleBasedAgentRunner` 和 handoff 边界。
+- `langgraph_agent_runner`：默认运行时 LangGraph runner 边界，支持 fake graph 测试。
 
 ## 已完成前端页面
 
@@ -64,7 +64,7 @@
 - 已新增 `agent_handoff_tools.py` 和 `multi_agent_graph_factory.py`：真实 LangGraph runner 会创建父级 multi-agent graph，主 Agent 可通过 `transfer_to_code_agent` 工具返回 `Command(goto="code_agent")`，父图接住后进入 `code_agent` 占位节点。当前 code_agent 仍只返回不可用提示。
 - 已新增 `docs/code-agent-design.md`：重新设计 code agent 为受限本地执行助手，首期通过 `CodeExecutionService` 只开放 `list_dir/read_text_file/write_text_file`；`delete_file` 和任意 `execute_shell(command)` 默认不开放，后续通过命令白名单、用户确认和审计逐步放权。
 - 已实现 `backend/app/services/code_execution_service.py` 阶段 A，并新增 `backend/tests/test_code_execution_service.py`。当前支持列目录、读 UTF-8 小文本、写 UTF-8 文本；默认拒绝路径越界、符号链接逃逸、敏感文件、超大读写和未显式覆盖已有文件。当前还没有挂到 LangGraph code_agent 工具。
-- 已新增 `backend/app/services/code_agent_tools.py`、`backend/app/services/code_langchain_tool_adapter.py`、`backend/app/services/code_agent_factory.py`，并把 `code_list_dir`、`code_read_text_file`、`code_write_text_file`、`transfer_to_main_agent` 接入真实 code_agent graph。`SEKI_AGENT_RUNNER=langgraph` 时默认 runner 会创建 main agent graph + code agent graph。
+- 已新增 `backend/app/services/code_agent_tools.py`、`backend/app/services/code_langchain_tool_adapter.py`、`backend/app/services/code_agent_factory.py`，并把 `code_list_dir`、`code_read_text_file`、`code_write_text_file`、`transfer_to_main_agent` 接入真实 code_agent graph。默认 runner 会创建 main agent graph + code agent graph。
 - Shell 和删除最终目标是开放，但后续必须通过受限 Python 脚本执行、命令白名单、审计和用户确认流程逐步放权，不直接恢复旧版任意 `execute_shell(command)`。
 - `CodeExecutionService` 默认 allowed roots 已包含项目根目录、workspace 和共享 `skills_dir`；skills 是所有用户通用能力，不限制在单用户 workspace 内。可通过 `SEKI_CODE_AGENT_ALLOWED_ROOTS` 覆盖。
 - 已新增 `run_python_script` 和 `code_run_python_script`：只能运行允许目录内已存在的 `.py` 文件，使用当前后端 Python，支持 `script_args`、超时、stdout/stderr 裁剪和审计；仍不开放任意 shell 和删除。
@@ -117,7 +117,7 @@
 - `backend/app/services/langgraph_agent_factory.py`
 - `backend/tests/test_langgraph_agent_factory.py`
 
-当前默认仍使用 `SEKI_AGENT_RUNNER="rule"`，如需启用 LangGraph runner，配置 `SEKI_AGENT_RUNNER="langgraph"` 并提供 `SEKI_RAG_API_KEY`，或在前端 Chat 页输入临时 API key。
+当前默认运行时已收敛为 LangGraph runner；`RuleBasedAgentRunner` 只作为单元测试/显式注入调试工具保留。运行真实 Agent 需要提供 `SEKI_RAG_API_KEY`，或在前端 Chat 页输入临时千问 API key。
 
 LangGraph runner 调用 graph 时必须传入 checkpointer config：
 
@@ -269,7 +269,18 @@ cd ..
 - 默认 `rule` runner 在 `use_knowledge_base=false` 时会调用普通聊天模型，而不是返回“未配置普通聊天模型”的占位提示。
 - 普通聊天模型复用 `SEKI_RAG_BASE_URL`、`SEKI_RAG_MODEL_NAME` 和 API key 优先级：环境 `SEKI_RAG_API_KEY` > 前端临时 key > 缺 key 提示。
 - 前端 Agent 页提示已调整：关闭“使用知识库 / RAG”即可测试普通聊天。
-- 新增本地调试开关 `SEKI_AGENT_ENABLE_KEYWORD_HANDOFF`。默认关闭；打开后 rule runner 可以把明显代码/脚本/文件类请求按关键词送入 code_agent。生产主路径仍建议使用 `SEKI_AGENT_RUNNER=langgraph`，由 agent 通过 handoff tool 自主切换。
+- 默认运行时不再按关键词猜测 code_agent handoff，统一由 LangGraph Agent 通过 handoff tool 自主切换；`RuleBasedAgentRunner` 的关键词路由只在单元测试直接构造时使用。
+- 已补齐 Agent 入口的短期记忆边界：`ChatRepository.list_messages(...)` 会读取当前用户当前 conversation 最近消息，`AgentService.ask(...)` 在写入本轮 user 消息前把历史传入 `AgentRequest.history`；`ChatModelService` 和 `LangGraphAgentRunner` 会把最近 20 条 user/assistant 历史带给模型/graph，保持用户、conversation、agent_name 隔离。
+- 已补齐旧框架身份设定：`TBOX_AGENT_SYSTEM_PROMPT` 继续保留“畅星集团/SIS、本田、TSU、seki 开发的助手”的设定，并补回普通聊天职责、普通问题不乱用工具、未指定翻译目标语言时默认日语等旧 Agent 行为。
+- 已新增 Chat SSE 流式接口：`POST /api/v1/chat/conversations/{conversation_id}/messages/stream` 返回 `event: delta` 和 `event: final`；前端 Agent 页面优先调用该接口并增量更新同一个 assistant 气泡，保留旧非流式接口作为“请求尚未开始输出时”的兼容兜底。
+- 当前流式实现是接口层 SSE 增量输出：后端 runner 仍先完成一次 Agent 调用，再将最终 answer 分片推给前端。后续如果要实现真实模型 token 级流式，需要继续扩展 `AgentRunner`/`LangGraphAgentRunner` 的 streaming 协议，并接入 LangGraph/ChatOpenAI 的原生 stream。
+- 已接回旧版火山/Feedcoop 风格联网搜索 provider：配置 `SEKI_WEB_SEARCH_API_KEY` 时启用；环境 key 为空时，前端 Agent 页可传入本次请求临时火山搜索 key。无 key 时工具返回未配置提示。
+- `ChatMessageCreate`/`AgentRequest` 已新增 `web_search_api_key`，与千问临时 key 一样只用于本次请求，不写入聊天消息。
+- `RuleBasedAgentRunner` 仍有 `web_search` 关键词路由测试覆盖，但默认运行时不再使用它。
+- 前端 Agent 入口已拆分两个密钥输入：`千问 API key` 和 `火山搜索 API key`。
+- 前端 Agent 聊天区域已改为内部滚动，消息过多时滚动 `.chat-feed`，不再优先拉长整个页面。
+- LangSmith 推荐沿用 LangChain/LangGraph 原生 tracing 环境变量：`LANGSMITH_TRACING=true`、`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`，这样模型、工具、graph span 可自然进入 LangSmith；不建议在当前阶段自定义包一层 trace，以免破坏 LangGraph 原生链路。
+- 已移除运行时 `SEKI_AGENT_RUNNER`、`SEKI_WEB_SEARCH_PROVIDER` 和关键词 handoff 环境开关；默认服务路径固定为 LangGraph runner，联网搜索只看环境火山 key 或前端临时火山 key。`RuleBasedAgentRunner` 只保留为单元测试/显式注入调试构件。
 
 验证：
 
@@ -278,3 +289,80 @@ cd ..
 ```
 
 结果：36 passed。
+
+本轮 Agent 记忆、身份设定和 SSE 前端流式验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_langgraph_agent_runner.py
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_chat_model_service.py backend\tests\test_agent_tools.py backend\tests\test_code_operation_service.py backend\tests\test_code_operations_api.py backend\tests\test_multi_agent_graph_factory.py backend\tests\test_langgraph_agent_factory.py backend\tests\test_agent_handoff_tools.py backend\tests\test_chat.py backend\tests\test_agent_service.py
+cd frontend
+npm run build
+npm run lint
+```
+
+结果：第一组后端 36 passed、1 skipped；第二组后端 45 passed；前端 build/lint 通过。
+
+本轮 web_search、前端 key 和聊天框滚动验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_web_search_service.py backend\tests\test_agent_runner.py backend\tests\test_chat.py
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_agent_tools.py backend\tests\test_langchain_tool_adapter.py
+cd frontend
+npm run build
+npm run lint
+```
+
+结果：后端 21 passed；后端 46 passed；前端 build/lint 通过。
+
+本轮 runner/web_search 配置收敛验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_web_search_service.py
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_tools.py backend\tests\test_langchain_tool_adapter.py backend\tests\test_langgraph_agent_factory.py backend\tests\test_multi_agent_graph_factory.py backend\tests\test_agent_handoff_tools.py
+cd frontend
+npm run build
+npm run lint
+```
+
+结果：后端 40 passed、1 skipped；后端 25 passed；前端 build/lint 通过。
+
+## 本轮现状梳理、文档和注释
+
+用户要求先暂停继续大功能开发，整理当前工程状态：
+
+- 删除不再需要的前端占位代码和 Vite 示例资产：
+  - `frontend/src/pages/PlaceholderPage.tsx`
+  - `frontend/src/assets/react.svg`
+  - `frontend/src/assets/vite.svg`
+  - `frontend/src/assets/hero.png`
+- `frontend/src/App.tsx` 已移除 `PlaceholderPage` 引用，未知路由回退到登录页。
+- 清理默认 runner 相关残留：`agent_runner_factory.py` 不再保留 `prefer_langgraph` 参数，运行时默认固定 LangGraph。
+- 扫描 `PlaceholderPage|react.svg|vite.svg|hero.png|prefer_langgraph|SEKI_AGENT_RUNNER|SEKI_WEB_SEARCH_PROVIDER` 等关键字，除文档中“已移除”历史说明外无运行时代码残留。
+- 修复 `CodeExecutionService.create_dir()` 中已有路径分支引用未定义变量 `recursive` 的 bug。
+
+新增当前态文档：
+
+- `docs/implementation-status.md`：基于当前代码整理大的已实现能力和待实现需求，后续当前规划优先看这个文件。
+- `docs/file-structure.md`：说明根目录、backend、frontend、tests、old/legacy 的文件职责。
+- `docs/user-guide.md`：说明本地启动前后端、创建用户、前端使用、Docker 部署/启动/用户管理、测试命令和常见问题。
+- `docs/README.md` 已补齐上述新文档入口，并说明 `refactor-roadmap.md` 主要保留历史迭代记录。
+
+已补中文注释/说明的当前有效代码主干：
+
+- 后端入口、配置、鉴权、临时 API key、SQLite 连接、依赖注入。
+- Chat API、AgentService、AgentRunner 协议、LangGraph runner/factory、Agent 工具、联网搜索。
+- 文件服务、任务执行器、翻译任务服务、code pending operation 服务、聊天仓储。
+- 前端 App 路由、ChatPage 关键状态和 SSE chat API。
+
+注释策略：只给当前有效框架代码补“职责/边界/关键流程”说明，不对 `old/` 和 `backend/legacy/` 做批量注释，避免把旧原型和兼容代码误当成新框架主线。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_web_search_service.py backend\tests\test_agent_tools.py backend\tests\test_langchain_tool_adapter.py backend\tests\test_langgraph_agent_factory.py backend\tests\test_multi_agent_graph_factory.py backend\tests\test_agent_handoff_tools.py
+cd frontend
+npm run build
+npm run lint
+```
+
+结果：后端 65 passed、1 skipped；前端 build/lint 通过。

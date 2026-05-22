@@ -1,11 +1,22 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from typing import Protocol
 
 from app.services.web_search_service import WebSearchDisabledError
 
+if TYPE_CHECKING:
+    from app.services.agent_runner import ChatHistoryMessage
+
 
 @dataclass(frozen=True)
 class AgentToolResult:
+    """内部工具统一返回结构。
+
+    content 会交给模型/前端作为文本说明，data 保存结构化结果，例如 task_id、
+    sources、匹配文件列表等，便于前端继续展示按钮或状态。
+    """
     content: str
     data: dict | None = None
 
@@ -16,7 +27,12 @@ class RagAnswerService(Protocol):
 
 
 class ChatAnswerService(Protocol):
-    def answer(self, message: str, api_key: str | None = None) -> dict:
+    def answer(
+        self,
+        message: str,
+        api_key: str | None = None,
+        history: tuple[ChatHistoryMessage, ...] = (),
+    ) -> dict:
         ...
 
 
@@ -46,6 +62,8 @@ class WebSearchService(Protocol):
 
 
 class RagAgentTool:
+    """把 RAG service 包装为 Agent 可调用工具。"""
+
     def __init__(self, rag_service: RagAnswerService):
         self.rag_service = rag_service
 
@@ -60,12 +78,19 @@ class ChatAgentTool:
     def __init__(self, chat_service: ChatAnswerService):
         self.chat_service = chat_service
 
-    def __call__(self, message: str, api_key: str | None = None) -> AgentToolResult:
-        result = self.chat_service.answer(message, api_key=api_key)
+    def __call__(
+        self,
+        message: str,
+        api_key: str | None = None,
+        history: tuple[ChatHistoryMessage, ...] = (),
+    ) -> AgentToolResult:
+        result = self.chat_service.answer(message, api_key=api_key, history=history)
         return AgentToolResult(content=str(result.get("answer", "")), data={"sources": result.get("sources", [])})
 
 
 class WebSearchAgentTool:
+    """把联网搜索 service 包装为 Agent 工具，并处理未配置 key 的友好提示。"""
+
     def __init__(self, web_search_service: WebSearchService):
         self.web_search_service = web_search_service
 
@@ -88,6 +113,12 @@ class WebSearchAgentTool:
 
 
 class FileLookupAgentTool:
+    """按当前用户 workspace 文件名查找 file_id。
+
+    Agent 后续调用 translation/spi/diff 时必须使用 file_id，因此这个工具是
+    自然语言文件名和后端任务接口之间的桥。
+    """
+
     def __init__(self, file_service: FileLookupService):
         self.file_service = file_service
 
@@ -98,7 +129,7 @@ class FileLookupAgentTool:
         suffix: str | None = None,
         limit: int = 10,
     ) -> AgentToolResult:
-        normalized_query = (filename_contains or "").strip().lower()
+        normalized_query = _normalize_filename_query(filename_contains or "")
         normalized_suffix = (suffix or "").strip().lower()
         if normalized_suffix and not normalized_suffix.startswith("."):
             normalized_suffix = f".{normalized_suffix}"
@@ -107,10 +138,10 @@ class FileLookupAgentTool:
         matches = []
         for file in files:
             filename = file.filename
-            lowered = filename.lower()
-            if normalized_query and normalized_query not in lowered:
+            normalized_filename = _normalize_filename_query(filename)
+            if normalized_query and normalized_query not in normalized_filename:
                 continue
-            if normalized_suffix and not lowered.endswith(normalized_suffix):
+            if normalized_suffix and not filename.lower().endswith(normalized_suffix):
                 continue
             matches.append(
                 {
@@ -131,12 +162,23 @@ class FileLookupAgentTool:
 
         lines = [f"{item['filename']} -> file_id={item['id']}" for item in matches]
         return AgentToolResult(
-            content="找到以下文件：\n" + "\n".join(lines),
+            content=(
+                "找到以下文件。后续调用 translation/spi/diff 工具时必须直接使用对应 file_id：\n"
+                + "\n".join(lines)
+            ),
             data={"files": matches},
         )
 
 
+def _normalize_filename_query(value: str) -> str:
+    """把文件名查询归一化，降低空格、符号、大小写导致的匹配失败。"""
+    lowered = value.strip().lower()
+    return "".join(char for char in lowered if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+
+
 class TranslationAgentTool:
+    """创建文档翻译任务的 Agent 工具。"""
+
     def __init__(self, translation_service: TranslationTaskService):
         self.translation_service = translation_service
 
@@ -187,6 +229,8 @@ def normalize_target_language(target_language: str) -> str:
 
 
 class SpiAgentTool:
+    """创建 SPI log 解析任务的 Agent 工具。"""
+
     def __init__(self, spi_service: SpiTaskService):
         self.spi_service = spi_service
 
@@ -204,6 +248,8 @@ class SpiAgentTool:
 
 
 class DiffAgentTool:
+    """创建版本差分任务的 Agent 工具。"""
+
     def __init__(self, diff_service: DiffTaskService):
         self.diff_service = diff_service
 

@@ -3,6 +3,8 @@ from collections.abc import Callable
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
+from app.services.agent_prompts import TBOX_AGENT_SYSTEM_PROMPT
+from app.services.agent_runner import ChatHistoryMessage
 
 
 ChatModelCaller = Callable[[str, str | None], str]
@@ -12,7 +14,12 @@ class ChatModelService:
     def __init__(self, caller: ChatModelCaller | None = None):
         self.caller = caller
 
-    def answer(self, message: str, api_key: str | None = None) -> dict:
+    def answer(
+        self,
+        message: str,
+        api_key: str | None = None,
+        history: tuple[ChatHistoryMessage, ...] = (),
+    ) -> dict:
         clean_message = message.strip()
         if not clean_message:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message is required")
@@ -43,7 +50,12 @@ class ChatModelService:
             base_url=settings.rag_base_url,
             timeout=300,
         )
-        response = model.invoke(clean_message)
+        messages = [{"role": "system", "content": TBOX_AGENT_SYSTEM_PROMPT}]
+        for item in history[-20:]:
+            if item.role in {"user", "assistant"} and item.content.strip():
+                messages.append({"role": item.role, "content": item.content})
+        messages.append({"role": "user", "content": clean_message})
+        response = model.invoke(messages)
         return {"answer": _message_content(response), "sources": []}
 
 

@@ -5,7 +5,6 @@ import ChatPage from './pages/ChatPage'
 import DiffPage from './pages/DiffPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
-import PlaceholderPage from './pages/PlaceholderPage'
 import SpiPage from './pages/SpiPage'
 import TasksPage from './pages/TasksPage'
 import TranslationPage from './pages/TranslationPage'
@@ -14,6 +13,7 @@ import type { User } from './types/auth'
 type HealthState = 'checking' | 'ok' | 'error'
 
 const routes = [
+  // 当前前端使用 hash route，避免本地 Vite 和静态部署时额外配置 history fallback。
   {
     path: 'login',
     title: '登录',
@@ -59,6 +59,7 @@ const routes = [
 ]
 
 function App() {
+  // accessToken 放在 localStorage，刷新页面后仍能继续访问需要登录的功能。
   const [health, setHealth] = useState<HealthState>('checking')
   const [user, setUser] = useState<User | null>(null)
   const [accessToken, setAccessToken] = useState(() => window.localStorage.getItem('seki_access_token'))
@@ -94,6 +95,7 @@ function App() {
   }
 
   function renderPage() {
+    // 这里保持显式分发，页面数量不多时比引入路由库更直观，也方便迁移初期调试。
     if (activeRoute.path === 'login') {
       return <LoginPage onLogin={handleLogin} user={user} />
     }
@@ -122,13 +124,7 @@ function App() {
       return <TasksPage accessToken={accessToken} />
     }
 
-    return (
-      <PlaceholderPage
-        description={activeRoute.description}
-        status={activeRoute.status}
-        title={activeRoute.title}
-      />
-    )
+    return <LoginPage onLogin={handleLogin} user={user} />
   }
 
   return (

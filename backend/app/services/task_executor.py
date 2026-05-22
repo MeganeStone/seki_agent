@@ -10,18 +10,25 @@ logger = logging.getLogger(__name__)
 
 class TaskExecutor(Protocol):
     def submit(self, task: TaskFn) -> None:
-        """Schedule a task for execution."""
+        """提交一个无返回值任务。"""
 
 
 class SynchronousTaskExecutor:
-    """Runs tasks immediately while preserving the future queue boundary."""
+    """同步执行器。
+
+    测试和本地调试时很有用：提交任务后立即执行，断言结果不需要等待线程调度。
+    """
 
     def submit(self, task: TaskFn) -> None:
         task()
 
 
 class ThreadPoolTaskExecutor:
-    """Runs tasks in a local thread pool for the single-process MVP."""
+    """单进程 MVP 使用的本地线程池执行器。
+
+    它能让上传接口快速返回 pending/running 任务，但不是分布式队列；生产高可用
+    场景后续建议迁移到 Redis + Celery/RQ。
+    """
 
     def __init__(self, max_workers: int = 3) -> None:
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="seki-task")
@@ -44,6 +51,7 @@ class ThreadPoolTaskExecutor:
 
 
 def create_task_executor(kind: str, max_workers: int = 3) -> TaskExecutor:
+    """根据配置创建任务执行器。"""
     normalized = kind.strip().lower()
     if normalized in {"sync", "synchronous"}:
         return SynchronousTaskExecutor()

@@ -13,6 +13,12 @@ CHUNK_SIZE = 1024 * 1024
 
 
 class FileService:
+    """用户文件管理服务。
+
+    负责把上传文件保存到 `workspace/{owner}`，并把元数据写入数据库。所有读取、
+    下载、删除都会再次校验 owner 和真实路径，防止用户通过 file_id 或路径越权。
+    """
+
     def __init__(self, conn: sqlite3.Connection, workspace_dir: Path | None = None, max_upload_size_bytes: int | None = None):
         settings = get_settings()
         self.files = FileRepository(conn)
@@ -30,6 +36,7 @@ class FileService:
         return self._to_schema(row)
 
     async def save_upload(self, owner_username: str, upload: UploadFile) -> FileRead:
+        """分块保存上传文件，避免一次性把大文件读入内存。"""
         safe_name = self._sanitize_filename(upload.filename or "uploaded-file")
         file_id = uuid4().hex
         owner_dir = self._owner_dir(owner_username)
@@ -58,6 +65,10 @@ class FileService:
         return self._to_schema(row)
 
     def get_file_path(self, owner_username: str, file_id: str) -> tuple[Path, str]:
+        """返回后端内部可读取的真实文件路径。
+
+        业务 service 需要拿到路径交给 legacy 脚本处理，但这个路径不会直接暴露给前端。
+        """
         row = self.files.get_for_owner(file_id, owner_username)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -68,6 +79,7 @@ class FileService:
         return path, row["filename"]
 
     def save_generated_content(self, owner_username: str, filename: str, content: bytes) -> FileRead:
+        """保存业务任务生成的结果文件，并复用统一文件表作为下载入口。"""
         safe_name = self._sanitize_filename(filename)
         file_id = uuid4().hex
         owner_dir = self._owner_dir(owner_username)

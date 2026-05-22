@@ -214,7 +214,7 @@ Agent 主线说明：
 - 已新增 `RuleBasedAgentRunner`，用于在接入真实 LangGraph 前验证工具路由和 runner 注入边界。
 - 已补充 runner 单元测试，覆盖 RAG、translation、SPI、diff 和禁用知识库分支。
 - 已新增 `LangGraphAgentRunner` 最小边界和 runner factory。
-- 用户已手动安装 `langgraph`、`langchain`、`langchain-openai`，默认 runner 仍保持 `rule`，可通过 `SEKI_AGENT_RUNNER="langgraph"` 切换。
+- 用户已手动安装 `langgraph`、`langchain`、`langchain-openai`；默认运行时已收敛为 LangGraph runner，不再通过 `SEKI_AGENT_RUNNER` 在 rule/graph 间切换。
 - 已新增 LangChain tool adapter，可将现有 Agent tool adapter 包装为 `StructuredTool`。
 - 已补充 LangChain tool adapter 单元测试。
 - 已新增 LangGraph graph factory，使用 `ChatOpenAI`、`StructuredTool` 和 `create_agent` 创建 TBOX Agent graph。
@@ -318,4 +318,16 @@ Agent 测试原则：
 - 新增普通聊天模型 fallback：关闭知识库时不再返回占位提示，而是调用普通聊天模型。
 - 普通聊天复用现有模型配置和 API key 优先级。
 - 前端 Agent 入口提示已更新，方便用户直接测试普通聊天。
-- 新增 `SEKI_AGENT_ENABLE_KEYWORD_HANDOFF` 本地调试开关，允许 rule runner 临时按关键词路由到 code_agent；默认关闭，生产仍建议 LangGraph handoff。
+- 已移除运行时 rule/graph 切换和关键词 handoff 配置；默认由 LangGraph Agent 通过 handoff tool 自主切换，`RuleBasedAgentRunner` 只保留为测试构件。
+- 新增对话短期记忆：`AgentService` 会读取当前 conversation 最近消息并传入 runner，`ChatModelService` 和 `LangGraphAgentRunner` 会携带最近 20 条 user/assistant 历史。
+- 旧 Agent 身份设定已在 `TBOX_AGENT_SYSTEM_PROMPT` 中补齐并对齐新工具契约：SIS/本田/TSU/seki 开发者身份、普通聊天职责、普通问题不乱用工具、翻译默认日语等。
+- 新增 Chat SSE 接口和前端流式展示：`/messages/stream` 输出 delta/final 事件，前端 Agent 页优先增量渲染 assistant 回复，并保留旧接口作为兼容兜底。
+- 接回火山/Feedcoop 兼容联网搜索 provider：配置环境 key 后启用，或由前端 Agent 页传入本次请求临时火山搜索 key；不再需要 `SEKI_WEB_SEARCH_PROVIDER` 开关。
+- 前端 Agent 页已拆分千问 API key 与火山搜索 API key；临时 key 不写入对话。
+- 前端 Agent 聊天框已改为内部滚动，避免长对话拉长整个页面。
+- LangSmith 追踪建议使用 LangChain/LangGraph 原生环境变量接入，当前无需自定义 trace wrapper。
+
+当前限制：
+
+- SSE 已改善前端流式体验，但仍是 runner 完成后再分片输出最终 answer；真实 token 级流式需下一步扩展 runner stream 协议和 LangGraph/LLM 原生 streaming。
+- web_search 已有旧 provider 兼容实现，但还没有做配额、缓存、审计和 provider 抽象管理 UI；后续生产化时继续补。

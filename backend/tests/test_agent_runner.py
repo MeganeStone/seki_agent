@@ -13,11 +13,20 @@ class FakeRagTool:
 
 class FakeChatTool:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str | None]] = []
+        self.calls: list[tuple[str, str | None, tuple]] = []
 
-    def __call__(self, message: str, api_key: str | None = None) -> AgentToolResult:
-        self.calls.append((message, api_key))
+    def __call__(self, message: str, api_key: str | None = None, history: tuple = ()) -> AgentToolResult:
+        self.calls.append((message, api_key, history))
         return AgentToolResult(content=f"chat: {message}", data={"sources": []})
+
+
+class FakeWebSearchTool:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, query: str, max_results: int = 5) -> AgentToolResult:
+        self.calls.append(query)
+        return AgentToolResult(content=f"web: {query}", data={"items": [{"title": "result"}]})
 
 
 class FakeTranslationTool:
@@ -109,6 +118,18 @@ def test_rule_runner_routes_diff_when_both_files_are_explicit() -> None:
     assert diff_tool.calls == [("alice", "old-1", "new-1")]
 
 
+def test_rule_runner_routes_web_search_requests() -> None:
+    web_search_tool = FakeWebSearchTool()
+    runner = RuleBasedAgentRunner(rag_tool=FakeRagTool(), web_search_tool=web_search_tool)
+
+    response = runner.run(request("请上网搜索今天的本田新闻"))
+
+    assert response.route == "web_search"
+    assert response.answer == "web: 请上网搜索今天的本田新闻"
+    assert response.data == {"items": [{"title": "result"}]}
+    assert web_search_tool.calls == ["请上网搜索今天的本田新闻"]
+
+
 def test_rule_runner_returns_direct_message_when_knowledge_base_disabled() -> None:
     runner = RuleBasedAgentRunner(rag_tool=FakeRagTool())
 
@@ -134,7 +155,7 @@ def test_rule_runner_uses_chat_tool_when_knowledge_base_disabled() -> None:
 
     assert response.route == "direct"
     assert response.answer == "chat: hello"
-    assert chat_tool.calls == [("hello", "request-key")]
+    assert chat_tool.calls == [("hello", "request-key", ())]
 
 
 def test_handoff_runner_routes_code_tasks_to_isolated_code_agent() -> None:
@@ -219,9 +240,11 @@ def test_agent_request_can_carry_user_api_key_without_changing_default_fields() 
     req_with_key = AgentRequest(
         owner_username="alice",
         conversation_id="conv-1",
-        message="hello",
-        api_key="user-key",
-    )
+            message="hello",
+            api_key="user-key",
+            web_search_api_key="web-key",
+        )
 
     assert req_with_key.agent_name == "main_agent"
     assert req_with_key.api_key == "user-key"
+    assert req_with_key.web_search_api_key == "web-key"

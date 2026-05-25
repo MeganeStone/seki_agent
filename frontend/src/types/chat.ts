@@ -17,16 +17,22 @@ export type ChatMessageResponse = {
   data: Record<string, unknown> | null
 }
 
+export type ChatMessageRead = {
+  id: string
+  conversation_id: string
+  role: 'user' | 'assistant' | 'tool' | string
+  content: string
+  created_at: string
+}
+
 export type SendChatMessagePayload = {
   message: string
   use_knowledge_base: boolean
-  api_key?: string
-  web_search_api_key?: string
 }
 
 export type ChatTurn = {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
   sources?: ChatSource[]
   route?: string | null

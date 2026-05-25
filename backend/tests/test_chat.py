@@ -157,7 +157,27 @@ def test_chat_rejects_empty_message(client: TestClient, test_db: sqlite3.Connect
     assert response.status_code == 422
 
 
-def test_chat_accepts_request_api_key(test_db: sqlite3.Connection) -> None:
+def test_list_chat_messages_returns_persisted_history(client: TestClient, test_db: sqlite3.Connection) -> None:
+    headers = auth_headers(client, test_db)
+    conv_response = client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"message": "hello", "use_knowledge_base": True},
+    )
+
+    response = client.get(f"/api/v1/chat/conversations/{conversation_id}/messages", headers=headers)
+
+    assert response.status_code == 200
+    assert [(item["role"], item["content"]) for item in response.json()] == [
+        ("user", "hello"),
+        ("assistant", "answer for: hello"),
+    ]
+
+
+def test_chat_ignores_request_api_key_fields(test_db: sqlite3.Connection) -> None:
     app = create_app()
     seen_requests: list[AgentRequest] = []
 
@@ -186,10 +206,10 @@ def test_chat_accepts_request_api_key(test_db: sqlite3.Connection) -> None:
     )
 
     assert response.status_code == 200
-    assert seen_requests[0].api_key == "request-key"
+    assert seen_requests[0].api_key is None
 
 
-def test_chat_accepts_request_web_search_api_key(test_db: sqlite3.Connection) -> None:
+def test_chat_ignores_request_web_search_api_key_fields(test_db: sqlite3.Connection) -> None:
     app = create_app()
     seen_requests: list[AgentRequest] = []
 
@@ -218,4 +238,4 @@ def test_chat_accepts_request_web_search_api_key(test_db: sqlite3.Connection) ->
     )
 
     assert response.status_code == 200
-    assert seen_requests[0].web_search_api_key == "volc-key"
+    assert seen_requests[0].web_search_api_key is None

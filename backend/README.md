@@ -66,8 +66,8 @@ SEKI_WEB_SEARCH_API_KEY=your-volc-key
 SEKI_WEB_SEARCH_API_URL=https://open.feedcoopapi.com/search_api/web_search
 ```
 
-If the environment key is empty, the Agent page can send a temporary Volc key
-for the current request. The temporary key is not stored in chat messages.
+API keys are configured in backend environment variables; the frontend does
+not collect per-request temporary keys.
 
 LangSmith tracing should use the native LangChain/LangGraph environment
 variables so tool/model/graph spans are captured without custom wrappers:

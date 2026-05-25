@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.db.sqlite import connect
-from app.services.agent_runner import AgentRequest, AgentResponse
+from app.services.agent_runner import AgentRequest, AgentResponse, ChatHistoryMessage
 from app.services.agent_service import AgentService
 from app.services.chat_model_service import ChatModelService
 from app.services.rag_service import RagService
@@ -80,6 +80,60 @@ def test_agent_service_creates_pending_operation_from_runner_data(test_db: sqlit
     assert pending["status"] == "pending"
     assert pending["operation_type"] == "delete_path"
     assert pending["payload"]["path"] == "existing.txt"
+
+
+def test_agent_service_records_tool_messages_from_runner(test_db: sqlite3.Connection) -> None:
+    class ToolMessageRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer="工具已执行。",
+                route="code_agent",
+                data={"active_agent": "code_agent"},
+                messages_to_store=(ChatHistoryMessage(role="tool", content="code_list_dir: ok"),),
+            )
+
+    service = AgentService(test_db, runner=ToolMessageRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "列目录")
+
+    rows = test_db.execute(
+        """
+        SELECT role, content
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at
+        """,
+        (conversation.conversation_id,),
+    ).fetchall()
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("user", "列目录"),
+        ("tool", "code_list_dir: ok"),
+        ("assistant", "工具已执行。"),
+    ]
+
+
+def test_agent_service_starts_next_turn_from_previous_active_agent(test_db: sqlite3.Connection) -> None:
+    class SwitchingRunner:
+        def __init__(self) -> None:
+            self.requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResponse:
+            self.requests.append(request)
+            return AgentResponse(
+                answer="ok",
+                route=request.agent_name,
+                data={"active_agent": "code_agent"},
+            )
+
+    runner = SwitchingRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "进入代码助手")
+    service.ask("alice", conversation.conversation_id, "继续")
+
+    assert [request.agent_name for request in runner.requests] == ["main_agent", "code_agent"]
 
 
 class FakeRunner:

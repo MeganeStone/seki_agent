@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 24 * 60
     rag_api_key: str | None = None
     rag_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    rag_model_name: str = "qwen-plus"
+    rag_model_name: str = "qwen3.7-max"
     web_search_api_key: str | None = None
     web_search_api_url: str = "https://open.feedcoopapi.com/search_api/web_search"
     web_search_timeout_seconds: float = 30.0

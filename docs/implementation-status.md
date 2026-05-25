@@ -38,10 +38,12 @@
 - Chat API 已统一作为 Agent 对话入口。
 - 默认运行时已收敛为 LangGraph runner，不再通过环境变量切换 rule/graph。
 - `RuleBasedAgentRunner` 仅保留为单元测试/显式注入调试构件。
-- Agent runner 会携带当前 conversation 最近 20 条 user/assistant 历史。
+- Agent runner 会携带当前 conversation 最近 20 条 user/assistant 历史；工具消息会落库，但暂不作为模型历史回放。
+- conversation 会持久化上一轮结束时的 `active_agent`，下一轮默认从该 agent 进入，保持旧版 `route_initial` 行为。
 - 系统 prompt 已包含 SIS/本田/TSU/seki 开发者身份设定。
-- 支持前端临时千问 API key 和火山搜索 API key，临时 key 不写入聊天记录。
+- API key 统一由后端环境变量提供，前端不再提供临时 key 输入。
 - Chat SSE 接口已实现，前端可增量展示 assistant 回复。
+- 前端 Agent 入口会恢复最近一次 conversation 并从后端拉取历史消息，切换页面后可继续对话。
 - 当前 SSE 是接口层分片，真实 token 级流式仍待做。
 
 ### Agent 工具
@@ -55,7 +57,7 @@
 ### Code Agent
 
 - 已有独立 code agent graph 和工具适配层。
-- 文件能力：列目录、读小文本、写小文本、创建目录。
+- 文件能力：列目录、读小文本、写小文本、创建目录；默认写入当前用户 `data/workspace/{username}`，项目根和 skills 目录只用于读取/执行。
 - 受限执行：可运行允许目录内 Python 脚本，可执行白名单命令。
 - 删除策略：本轮 code agent 创建的内容可直接清理；既有内容需要 pending operation。
 - pending operation 后端和前端确认 UI 已接入。

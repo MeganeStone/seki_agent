@@ -11,8 +11,14 @@ class ConversationCreateResponse(BaseModel):
 class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1)
     use_knowledge_base: bool = True
-    api_key: str | None = None
-    web_search_api_key: str | None = None
+
+
+class ChatMessageRead(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    created_at: datetime
 
 
 class ChatSource(BaseModel):

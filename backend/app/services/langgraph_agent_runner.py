@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from app.core.api_keys import temporary_env_api_key
 from app.services.agent_prompts import TBOX_AGENT_SYSTEM_PROMPT
-from app.services.agent_runner import AgentRequest, AgentResponse, AgentRunner
+from app.services.agent_runner import AgentRequest, AgentResponse, AgentRunner, ChatHistoryMessage
 
 
 class MissingAgentDependencyError(RuntimeError):
@@ -37,6 +37,7 @@ class LangGraphAgentRunner:
             "owner_username": request.owner_username,
             "conversation_id": request.conversation_id,
             "agent_name": request.agent_name,
+            "active_agent": request.agent_name,
             "messages": [
                 {"role": item.role, "content": item.content}
                 for item in request.history[-20:]
@@ -84,6 +85,7 @@ class LangGraphAgentRunner:
                 sources=result.get("sources", []),
                 data=LangGraphAgentRunner._response_data(result),
                 route=str(result.get("route", "langgraph")),
+                messages_to_store=LangGraphAgentRunner._extract_messages_to_store(result.get("messages", [])),
             )
         return AgentResponse(answer=str(result), route="langgraph")
 
@@ -132,6 +134,37 @@ class LangGraphAgentRunner:
                         parts.append(text)
             return "\n".join(parts)
         return ""
+
+    @staticmethod
+    def _extract_messages_to_store(messages: object) -> tuple[ChatHistoryMessage, ...]:
+        if not isinstance(messages, list):
+            return ()
+
+        last_user_index = -1
+        for index, message in enumerate(messages):
+            if LangGraphAgentRunner._message_role(message) in {"user", "human"}:
+                last_user_index = index
+
+        current_turn = messages[last_user_index + 1 :] if last_user_index >= 0 else messages
+        stored: list[ChatHistoryMessage] = []
+        for message in current_turn:
+            role = LangGraphAgentRunner._message_role(message)
+            if role != "tool":
+                continue
+            content = LangGraphAgentRunner._message_content(message)
+            if content:
+                stored.append(ChatHistoryMessage(role="tool", content=content))
+        return tuple(stored)
+
+    @staticmethod
+    def _message_role(message: object) -> str:
+        if isinstance(message, dict):
+            role = message.get("role") or message.get("type")
+        else:
+            role = getattr(message, "role", None) or getattr(message, "type", None)
+            if role is None and message.__class__.__name__ == "ToolMessage":
+                role = "tool"
+        return str(role or "").lower()
 
 
 def create_langgraph_agent_runner(graph_factory: Callable[[], object] | None = None) -> AgentRunner:

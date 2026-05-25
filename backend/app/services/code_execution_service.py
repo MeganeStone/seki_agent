@@ -51,6 +51,7 @@ class CodeExecutionService:
         self,
         allowed_roots: list[Path] | None = None,
         default_root: Path | None = None,
+        writable_roots: list[Path] | None = None,
         max_read_bytes: int | None = None,
         max_write_bytes: int | None = None,
         max_output_chars: int = 8000,
@@ -65,6 +66,7 @@ class CodeExecutionService:
         ]
         self.allowed_roots = [root.resolve() for root in roots]
         self.default_root = (default_root or self.allowed_roots[0]).resolve()
+        self.writable_roots = [root.resolve() for root in (writable_roots or [self.default_root])]
         self.max_read_bytes = max_read_bytes or settings.code_agent_max_read_bytes
         self.max_write_bytes = max_write_bytes or settings.code_agent_max_write_bytes
         self.max_output_chars = max_output_chars
@@ -86,6 +88,9 @@ class CodeExecutionService:
         self.created_paths: set[Path] = set()
         if not self._is_under_allowed_root(self.default_root):
             raise ValueError("default_root must be under an allowed root")
+        for root in self.writable_roots:
+            if not self._is_under_allowed_root(root):
+                raise ValueError("writable_roots must be under allowed roots")
         self.command_policy = CommandPolicy(
             python_executable=sys.executable,
             allowed_prefixes=settings.code_agent_allowed_command_prefixes,
@@ -105,6 +110,7 @@ class CodeExecutionService:
         target = ""
         try:
             resolved = self._resolve_existing_path(path)
+            self._ensure_writable(resolved)
             target = self._display_path(resolved)
             if not resolved.is_dir():
                 return self._record_result(
@@ -725,12 +731,14 @@ class CodeExecutionService:
         candidate = self._candidate_path(path)
         parent = candidate.parent.resolve()
         self._ensure_allowed(parent)
+        self._ensure_writable(parent)
         if not parent.exists() or not parent.is_dir():
             raise ValueError("父目录不存在或不是目录。")
         self._reject_symlink_path(parent)
         self._reject_sensitive_path(parent)
         resolved = candidate.resolve()
         self._ensure_allowed(resolved)
+        self._ensure_writable(resolved)
         if resolved.exists():
             self._reject_symlink_path(resolved)
         self._reject_sensitive_path(resolved)
@@ -747,6 +755,10 @@ class CodeExecutionService:
     def _ensure_allowed(self, resolved: Path) -> None:
         if not self._is_under_allowed_root(resolved):
             raise ValueError("该路径不在允许的工作目录内。")
+
+    def _ensure_writable(self, resolved: Path) -> None:
+        if not any(root == resolved or root in resolved.parents for root in self.writable_roots):
+            raise ValueError("该路径不在 code agent 的可写工作目录内。")
 
     def _is_under_allowed_root(self, resolved: Path) -> bool:
         return any(root == resolved or root in resolved.parents for root in self.allowed_roots)

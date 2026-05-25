@@ -2,7 +2,7 @@ import pytest
 import importlib.util
 import os
 
-from app.services.agent_runner import AgentRequest, HandoffAgentRunner
+from app.services.agent_runner import AgentRequest
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.langgraph_agent_runner import (
     LangGraphAgentRunner,
@@ -168,6 +168,24 @@ def test_langgraph_runner_extracts_answer_from_messages_result() -> None:
     assert response.answer == "assistant answer"
 
 
+def test_langgraph_runner_extracts_current_turn_tool_messages() -> None:
+    response = LangGraphAgentRunner._to_response(
+        {
+            "messages": [
+                {"role": "user", "content": "old"},
+                {"role": "tool", "content": "old tool"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "new"},
+                {"role": "tool", "content": "new tool"},
+                {"role": "assistant", "content": "new answer"},
+            ],
+        }
+    )
+
+    assert response.answer == "new answer"
+    assert [(item.role, item.content) for item in response.messages_to_store] == [("tool", "new tool")]
+
+
 def test_langgraph_runner_extracts_answer_from_message_object_content_list() -> None:
     response = LangGraphAgentRunner._to_response(
         {
@@ -194,5 +212,4 @@ def test_default_runner_uses_langgraph_boundary() -> None:
         RagService(answerer=lambda question: {"answer": f"rag: {question}", "sources": []}),
     )
 
-    assert isinstance(runner, HandoffAgentRunner)
-    assert isinstance(runner.main_runner, LangGraphAgentRunner)
+    assert isinstance(runner, LangGraphAgentRunner)

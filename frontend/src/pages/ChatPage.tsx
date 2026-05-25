@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { createConversation, sendChatMessage, streamChatMessage } from '../api/chat'
+import { createConversation, listChatMessages, sendChatMessage, streamChatMessage } from '../api/chat'
 import { cancelCodeOperation, confirmCodeOperation, listCodeOperations } from '../api/codeOperations'
 import { getDiffTask } from '../api/diff'
 import { downloadFile } from '../api/files'
@@ -12,6 +12,8 @@ import type { CodeOperation } from '../types/codeOperations'
 type ChatPageProps = {
   accessToken: string | null
 }
+
+const LAST_CONVERSATION_KEY = 'seki_last_chat_conversation_id'
 
 function stringValue(data: Record<string, unknown>, key: string): string | null {
   // 工具返回的 data 是开放结构，前端展示前统一做类型收窄，避免渲染时报错。
@@ -30,6 +32,13 @@ function taskDataFromResponse(task: Record<string, unknown>): Record<string, unk
     result_text: task.result_text,
     updated_at: task.updated_at,
   }
+}
+
+function createClientId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 function objectValue(data: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
@@ -87,12 +96,12 @@ function operationTarget(operation: CodeOperation): string | null {
 function ChatPage({ accessToken }: ChatPageProps) {
   // ChatPage 同时承担普通对话、工具任务展示、code agent 待确认操作三个职责。
   // 这些状态暂时保留在页面内，等交互稳定后再考虑拆成更小组件。
-  const [conversationId, setConversationId] = useState('')
+  const [conversationId, setConversationId] = useState(
+    () => window.localStorage.getItem(LAST_CONVERSATION_KEY) ?? '',
+  )
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [message, setMessage] = useState('')
   const [useKnowledgeBase, setUseKnowledgeBase] = useState(true)
-  const [apiKey, setApiKey] = useState('')
-  const [webSearchApiKey, setWebSearchApiKey] = useState('')
   const [loading, setLoading] = useState(false)
   const [activeToolTurnId, setActiveToolTurnId] = useState('')
   const [activeOperationId, setActiveOperationId] = useState('')
@@ -104,6 +113,36 @@ function ChatPage({ accessToken }: ChatPageProps) {
     loading,
   ])
 
+  useEffect(() => {
+    if (!accessToken) return
+    const savedConversationId = window.localStorage.getItem(LAST_CONVERSATION_KEY)
+    if (!savedConversationId) return
+
+    let isCurrent = true
+    listChatMessages(accessToken, savedConversationId)
+      .then((messages) => {
+        if (!isCurrent) return
+        setTurns(
+          messages.map((item) => ({
+            id: item.id,
+            role: item.role === 'tool' ? 'tool' : item.role === 'user' ? 'user' : 'assistant',
+            content: item.content,
+            route: item.role === 'tool' ? 'tool' : undefined,
+          })),
+        )
+      })
+      .catch(() => {
+        if (!isCurrent) return
+        window.localStorage.removeItem(LAST_CONVERSATION_KEY)
+        setConversationId('')
+        setTurns([])
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [accessToken])
+
   async function ensureConversation(): Promise<string> {
     // 会话采用懒创建：用户第一次发送消息时才向后端创建 conversation。
     if (conversationId) return conversationId
@@ -111,6 +150,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
     const created = await createConversation(accessToken)
     setConversationId(created.conversation_id)
+    window.localStorage.setItem(LAST_CONVERSATION_KEY, created.conversation_id)
     return created.conversation_id
   }
 
@@ -124,12 +164,12 @@ function ChatPage({ accessToken }: ChatPageProps) {
     setLoading(true)
     setTurns((current) => [
       ...current,
-      { id: crypto.randomUUID(), role: 'user', content: userMessage },
+      { id: createClientId(), role: 'user', content: userMessage },
     ])
 
     try {
       const activeConversationId = await ensureConversation()
-      const assistantTurnId = crypto.randomUUID()
+      const assistantTurnId = createClientId()
       setTurns((current) => [
         ...current,
         {
@@ -143,8 +183,6 @@ function ChatPage({ accessToken }: ChatPageProps) {
       const payload = {
         message: userMessage,
         use_knowledge_base: useKnowledgeBase,
-        api_key: apiKey.trim() || undefined,
-        web_search_api_key: webSearchApiKey.trim() || undefined,
       }
       let receivedStreamContent = false
       try {
@@ -207,6 +245,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
     setTurns([])
     setMessage('')
     setError('')
+    window.localStorage.removeItem(LAST_CONVERSATION_KEY)
   }
 
   async function handleRefreshToolTurn(turn: ChatTurn) {
@@ -301,7 +340,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
             return
           }
           nextTurns.push({
-            id: crypto.randomUUID(),
+            id: createClientId(),
             role: 'assistant',
             content: '有一个 code agent 操作正在等待确认。',
             route: 'code_agent',
@@ -405,7 +444,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
           return (
             <article className={`chat-turn ${turn.role}`} key={turn.id}>
-              <strong>{turn.role === 'user' ? '你' : 'Seki Agent'}</strong>
+              <strong>{turn.role === 'user' ? '你' : turn.role === 'tool' ? '工具' : 'Seki Agent'}</strong>
               <p>{turn.content}</p>
               {turn.sources && turn.sources.length > 0 && (
                 <div className="source-list">
@@ -492,20 +531,6 @@ function ChatPage({ accessToken }: ChatPageProps) {
           />
           使用知识库 / RAG
         </label>
-        <input
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-          placeholder="千问 API key（可选，后端环境配置优先生效）"
-          type="password"
-          autoComplete="off"
-        />
-        <input
-          value={webSearchApiKey}
-          onChange={(event) => setWebSearchApiKey(event.target.value)}
-          placeholder="火山搜索 API key（可选，后端环境配置优先生效）"
-          type="password"
-          autoComplete="off"
-        />
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}

@@ -1,4 +1,6 @@
-from app.services.agent_runner import AgentRunner, HandoffAgentRunner
+import re
+
+from app.services.agent_runner import AgentRunner
 from app.services.agent_tools import (
     DiffAgentTool,
     FileLookupAgentTool,
@@ -46,14 +48,31 @@ def create_default_agent_runner(
             ),
             code_agent_graph=create_code_langgraph_agent(
                 settings=settings.model_copy(update={"rag_api_key": settings.rag_api_key or request.api_key}),
-                code_file_tool=CodeAgentFileTool(CodeExecutionService()),
+                code_file_tool=CodeAgentFileTool(_create_code_execution_service(request.owner_username)),
                 owner_username=request.owner_username,
                 conversation_id=request.conversation_id,
                 operation_service=code_operation_service,
             ),
         )
     )
-    return HandoffAgentRunner(main_runner=langgraph_runner)
+    return langgraph_runner
+
+
+def _create_code_execution_service(owner_username: str) -> CodeExecutionService:
+    settings = get_settings()
+    safe_owner = re.sub(r"[^a-zA-Z0-9_-]", "_", owner_username.strip()) or "anonymous"
+    user_workspace = (settings.workspace_dir / safe_owner).resolve()
+    user_workspace.mkdir(parents=True, exist_ok=True)
+    allowed_roots = settings.code_agent_allowed_roots or [
+        user_workspace,
+        settings.project_root,
+        settings.skills_dir,
+    ]
+    return CodeExecutionService(
+        allowed_roots=allowed_roots,
+        default_root=user_workspace,
+        writable_roots=[user_workspace],
+    )
 
 
 def _create_web_search_service(settings, request_api_key: str | None = None):

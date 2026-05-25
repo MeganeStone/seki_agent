@@ -579,6 +579,13 @@ code {
   border-color: #c9dcff;
 }
 
+.chat-turn.tool {
+  max-width: 88%;
+  background: #fff8e8;
+  border-color: #f0c36c;
+  color: #4f3f1c;
+}
+
 .chat-turn p {
   margin: 0;
   white-space: pre-wrap;

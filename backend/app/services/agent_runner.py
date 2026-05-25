@@ -43,6 +43,7 @@ class AgentResponse:
     sources: list = None
     data: dict | None = None
     route: str = "rag"
+    messages_to_store: tuple[ChatHistoryMessage, ...] = ()
 
     def __post_init__(self) -> None:
         if self.sources is None:

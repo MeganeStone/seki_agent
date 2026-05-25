@@ -249,7 +249,7 @@ frontend/
 - code agent 的真实代码执行能力必须通过受限 `CodeExecutionService` 暴露，不能让 LLM 直接获得任意 shell 或任意文件系统权限。
 - `CodeExecutionService` 的详细设计见 `docs/code-agent-design.md`。首期只开放 `list_dir/read_text_file/write_text_file`，shell 执行后续通过命令白名单和确认流程逐步放权。
 - 主 Agent 到 code agent 的切换通过 LangGraph handoff tool 和父级 multi-agent graph 由 Agent 自主调用；外层 runner 不通过关键词硬编码猜测用户意图。
-- 外部模型 API key 的优先级为后端环境配置优先，其次使用前端请求携带的临时 key；两者都没有时返回清晰提示。临时 key 不写入数据库、任务记录或对话消息。
+- 外部模型和搜索 API key 统一由后端环境变量配置；前端不收集或传递临时 key。缺少必要 key 时返回清晰提示。
 - 工具调用失败时返回标准化错误，避免泄露 API Key、路径和内部异常细节。
 
 ## 7. 数据与存储

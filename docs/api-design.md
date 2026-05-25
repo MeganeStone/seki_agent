@@ -190,9 +190,7 @@ file=<binary>
 ```json
 {
   "message": "请解释某个 TSU 功能",
-  "use_knowledge_base": true,
-  "api_key": "可选千问临时 key，环境未配置时使用",
-  "web_search_api_key": "可选火山搜索临时 key，环境未配置时使用"
+  "use_knowledge_base": true
 }
 ```
 
@@ -248,9 +246,7 @@ file=<binary>
 ```json
 {
   "message": "什么是 TSU？",
-  "use_knowledge_base": true,
-  "api_key": "可选千问临时 key，环境未配置时使用",
-  "web_search_api_key": "可选火山搜索临时 key，环境未配置时使用"
+  "use_knowledge_base": true
 }
 ```
 
@@ -262,6 +258,30 @@ file=<binary>
 - `event: final`：完整 `ChatMessageResponse`，包含 `conversation_id`、`answer`、`sources`、`route`、`data`。
 
 当前实现用于前端增量展示；后端仍先完成一次 Agent 调用，再将 answer 分片输出。后续可在同一接口契约下升级为真实模型 token 流。
+
+### GET /chat/conversations/{conversation_id}/messages
+
+用途：读取当前用户当前 conversation 的历史消息，供前端页面恢复对话。
+
+说明：
+
+- 只返回当前登录用户有权访问的 conversation。
+- 当前消息角色包含 `user`、`assistant` 和 `tool`。
+- `tool` 消息来自 LangGraph 工具执行结果落库，前端可用于展示工具轨迹；模型短期历史仍只回放 `user/assistant`。
+
+响应：
+
+```json
+[
+  {
+    "id": "message-id",
+    "conversation_id": "conv-id",
+    "role": "tool",
+    "content": "工具执行结果",
+    "created_at": "2026-05-25T10:00:00Z"
+  }
+]
+```
 
 后续可扩展：
 
@@ -286,8 +306,7 @@ file=<binary>
 ```json
 {
   "file_id": "file-id",
-  "target_language": "英语",
-  "api_key": "可选，环境未配置时使用"
+  "target_language": "英语"
 }
 ```
 

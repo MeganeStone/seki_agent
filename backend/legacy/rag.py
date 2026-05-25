@@ -26,7 +26,7 @@ SIS_AGENT_ROOT = Path(__file__).parent.parent
 # 4. 大模型配置（请替换为自己的API Key）
 RAG_API_KEY = os.getenv("RAG_API_KEY")  # 替换成自己的！
 RAG_BASE_URL = os.getenv("RAG_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 替换成自己的！
-RAG_MODEL_NAME = os.getenv("RAG_LLM_MODEL") or "qwen-plus"  # 替换成你想用的模型，如 "qwen3.5-plus" 或 "qwen-plus"
+RAG_MODEL_NAME = os.getenv("RAG_LLM_MODEL") or "qwen3.7-max"  # 替换成你想用的模型，如 "qwen3.5-plus" 或 "qwen-plus"
 RERANK_API_KEY = os.getenv("RERANK_API_KEY")  # 替换成自己的！
 PARENT_STORE_DIR = os.getenv("PARENT_STORE_DIR") or str(SIS_AGENT_ROOT / "parent_store")  # 父文档存储路径
 

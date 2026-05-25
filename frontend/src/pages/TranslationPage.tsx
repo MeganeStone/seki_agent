@@ -59,7 +59,6 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
   const [selectedFileId, setSelectedFileId] = useState('')
   const [targetLanguage, setTargetLanguage] = useState(targetLanguages[0])
   const [customLanguage, setCustomLanguage] = useState('')
-  const [apiKey, setApiKey] = useState('')
   const [task, setTask] = useState<TranslationTask | null>(() => readCachedTask())
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -145,7 +144,6 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
       const created = await createTranslationTask(accessToken, {
         file_id: selectedFileId,
         target_language: effectiveTargetLanguage,
-        api_key: apiKey.trim() || undefined,
       })
       setTask(created)
       persistTask(created)
@@ -244,17 +242,6 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
             value={customLanguage}
             onChange={(event) => setCustomLanguage(event.target.value)}
             placeholder="可选，填写后优先生效"
-          />
-        </label>
-
-        <label>
-          临时 API key
-          <input
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="可选，后端环境配置优先生效"
-            type="password"
-            autoComplete="off"
           />
         </label>
 

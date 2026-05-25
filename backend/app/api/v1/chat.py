@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_agent_service, get_current_user
 from app.schemas.auth import UserRead
-from app.schemas.chat import ChatMessageCreate, ChatMessageResponse, ConversationCreateResponse
+from app.schemas.chat import ChatMessageCreate, ChatMessageRead, ChatMessageResponse, ConversationCreateResponse
 from app.services.agent_service import AgentService
 
 
@@ -39,8 +39,6 @@ def create_message(
         conversation_id,
         payload.message,
         use_knowledge_base=payload.use_knowledge_base,
-        api_key=payload.api_key,
-        web_search_api_key=payload.web_search_api_key,
     )
 
 
@@ -62,11 +60,20 @@ def create_message_stream(
             conversation_id,
             payload.message,
             use_knowledge_base=payload.use_knowledge_base,
-            api_key=payload.api_key,
-            web_search_api_key=payload.web_search_api_key,
         )
         for char in response.answer:
             yield f"event: delta\ndata: {json.dumps({'text': char}, ensure_ascii=False)}\n\n"
         yield f"event: final\ndata: {response.model_dump_json()}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=list[ChatMessageRead])
+def list_messages(
+    conversation_id: str,
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+    agent_service: Annotated[AgentService, Depends(get_agent_service)],
+    limit: int = 100,
+) -> list[ChatMessageRead]:
+    """读取当前用户某个 conversation 的历史消息，供前端页面恢复对话使用。"""
+    return agent_service.list_messages(current_user.username, conversation_id, limit=limit)

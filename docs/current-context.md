@@ -54,19 +54,19 @@
 - 旧 `old/src/multi_agent.py` 的闭包上下文不适合多用户并发，后续必须替换为 `owner_username + conversation_id` 隔离。
 - `AgentService` 默认 runner 已注入 RAG、translation、SPI、diff service；Agent 对话入口和前端手动入口共享这些 service。
 - Chat API 响应已保留 Agent runner 的 `route` 和 `data` 字段。
-- 前端 Agent 对话页已展示结构化工具结果，包括工具路由、任务 ID、状态、结果文件 ID 和错误信息。
+- 前端 Agent 对话页已展示结构化工具结果，包括工具路由、任务 ID、状态、结果文件 ID 和错误信息；切换页面后会恢复最近一次 conversation 并从后端拉取历史消息继续对话。
 - 已完成旧 `old/src/` Agent 工具链差距梳理：RAG/translation/SPI/diff 已迁移到新后端 service/tool adapter；`web_search` 已有默认禁用抽象；`code_agent` 已有 handoff 骨架但真实代码执行尚未开放；多 Agent 真实 LangGraph 子图交接、长上下文摘要和更强的文件名到 `file_id` 解析仍待设计。
 - 已新增 `FileLookupAgentTool`，让 LangGraph Agent 能按当前用户 workspace 文件名/后缀查找文件 ID，降低用户手动输入 `file_id` 的门槛。
 - 已补充 Agent 多步工具链契约测试，覆盖 `file_lookup -> translation`、`file_lookup -> spi`、`file_lookup -> diff` 的 file_id 传递。
 - 已新增 `HandoffAgentRunner` 和 `CodeAgentUnavailableRunner`，用于建立主 Agent/code agent 上下文隔离边界；默认不再根据关键词硬编码猜测是否切换到 `code_agent`。真实切换后续要通过 LangGraph handoff tool/子图由 Agent 自主调用；当前仍不开放真实代码文件操作或命令执行。
 - `AgentRequest` 已新增 `agent_name`，默认 `main_agent`；`LangGraphAgentRunner` 的 `thread_id` 已从 `owner_username:conversation_id` 扩展为 `owner_username:conversation_id:agent_name`，为主 Agent/code agent 上下文隔离打基础。
-- `AgentRequest` 已新增可选 `api_key`，Chat API 和翻译 API 均可接收前端临时 API key。优先级为环境配置 key > 前端临时 key > 缺 key 提示；临时 key 不写入对话消息或任务记录。
+- API key 已收敛为后端环境变量配置，前端 Agent 和翻译页面不再提供临时 key 输入；Chat API 请求体也不再暴露 `api_key` / `web_search_api_key` 字段。
 - 已新增 `agent_handoff_tools.py` 和 `multi_agent_graph_factory.py`：真实 LangGraph runner 会创建父级 multi-agent graph，主 Agent 可通过 `transfer_to_code_agent` 工具返回 `Command(goto="code_agent")`，父图接住后进入 `code_agent` 占位节点。当前 code_agent 仍只返回不可用提示。
 - 已新增 `docs/code-agent-design.md`：重新设计 code agent 为受限本地执行助手，首期通过 `CodeExecutionService` 只开放 `list_dir/read_text_file/write_text_file`；`delete_file` 和任意 `execute_shell(command)` 默认不开放，后续通过命令白名单、用户确认和审计逐步放权。
 - 已实现 `backend/app/services/code_execution_service.py` 阶段 A，并新增 `backend/tests/test_code_execution_service.py`。当前支持列目录、读 UTF-8 小文本、写 UTF-8 文本；默认拒绝路径越界、符号链接逃逸、敏感文件、超大读写和未显式覆盖已有文件。当前还没有挂到 LangGraph code_agent 工具。
 - 已新增 `backend/app/services/code_agent_tools.py`、`backend/app/services/code_langchain_tool_adapter.py`、`backend/app/services/code_agent_factory.py`，并把 `code_list_dir`、`code_read_text_file`、`code_write_text_file`、`transfer_to_main_agent` 接入真实 code_agent graph。默认 runner 会创建 main agent graph + code agent graph。
 - Shell 和删除最终目标是开放，但后续必须通过受限 Python 脚本执行、命令白名单、审计和用户确认流程逐步放权，不直接恢复旧版任意 `execute_shell(command)`。
-- `CodeExecutionService` 默认 allowed roots 已包含项目根目录、workspace 和共享 `skills_dir`；skills 是所有用户通用能力，不限制在单用户 workspace 内。可通过 `SEKI_CODE_AGENT_ALLOWED_ROOTS` 覆盖。
+- `CodeExecutionService` 默认 allowed roots 已包含当前用户 workspace、项目根目录和共享 `skills_dir`；skills 是所有用户通用能力，不限制在单用户 workspace 内。code agent 默认可写工作目录为 `data/workspace/{username}`，项目根和 skills 用于读取/执行，不作为默认写入位置。
 - 已新增 `run_python_script` 和 `code_run_python_script`：只能运行允许目录内已存在的 `.py` 文件，使用当前后端 Python，支持 `script_args`、超时、stdout/stderr 裁剪和审计；仍不开放任意 shell 和删除。
 - 已新增 `create_dir/delete_path` 和 `code_create_dir/code_delete_path`：code agent 本次运行创建的文件/目录可直接删除；其他既有内容返回 `requires_confirmation`，当前尚未实现用户确认 API/UI。
 - 已新增 `CommandPolicy`、`run_allowed_command` 和 `code_run_allowed_command`。策略采用“白名单直接执行、明确黑名单拒绝、其他未知命令进入用户确认”，不采用纯黑名单；当前允许 `git status/diff`、`pytest`、`python -m pytest`、`npm run lint/build`，拒绝危险命令和 shell 控制符。仍不开放任意 `execute_shell(command)`。
@@ -117,7 +117,7 @@
 - `backend/app/services/langgraph_agent_factory.py`
 - `backend/tests/test_langgraph_agent_factory.py`
 
-当前默认运行时已收敛为 LangGraph runner；`RuleBasedAgentRunner` 只作为单元测试/显式注入调试工具保留。运行真实 Agent 需要提供 `SEKI_RAG_API_KEY`，或在前端 Chat 页输入临时千问 API key。
+当前默认运行时已收敛为 LangGraph runner；`RuleBasedAgentRunner` 只作为单元测试/显式注入调试工具保留。运行真实 Agent 需要在后端环境变量中提供 `SEKI_RAG_API_KEY`。
 
 LangGraph runner 调用 graph 时必须传入 checkpointer config：
 
@@ -267,20 +267,20 @@ cd ..
 
 - 已新增 `ChatModelService`，用于普通聊天 fallback。
 - 默认 `rule` runner 在 `use_knowledge_base=false` 时会调用普通聊天模型，而不是返回“未配置普通聊天模型”的占位提示。
-- 普通聊天模型复用 `SEKI_RAG_BASE_URL`、`SEKI_RAG_MODEL_NAME` 和 API key 优先级：环境 `SEKI_RAG_API_KEY` > 前端临时 key > 缺 key 提示。
+- 普通聊天模型复用 `SEKI_RAG_BASE_URL`、`SEKI_RAG_MODEL_NAME` 和后端环境变量 `SEKI_RAG_API_KEY`。
 - 前端 Agent 页提示已调整：关闭“使用知识库 / RAG”即可测试普通聊天。
 - 默认运行时不再按关键词猜测 code_agent handoff，统一由 LangGraph Agent 通过 handoff tool 自主切换；`RuleBasedAgentRunner` 的关键词路由只在单元测试直接构造时使用。
 - 已补齐 Agent 入口的短期记忆边界：`ChatRepository.list_messages(...)` 会读取当前用户当前 conversation 最近消息，`AgentService.ask(...)` 在写入本轮 user 消息前把历史传入 `AgentRequest.history`；`ChatModelService` 和 `LangGraphAgentRunner` 会把最近 20 条 user/assistant 历史带给模型/graph，保持用户、conversation、agent_name 隔离。
 - 已补齐旧框架身份设定：`TBOX_AGENT_SYSTEM_PROMPT` 继续保留“畅星集团/SIS、本田、TSU、seki 开发的助手”的设定，并补回普通聊天职责、普通问题不乱用工具、未指定翻译目标语言时默认日语等旧 Agent 行为。
 - 已新增 Chat SSE 流式接口：`POST /api/v1/chat/conversations/{conversation_id}/messages/stream` 返回 `event: delta` 和 `event: final`；前端 Agent 页面优先调用该接口并增量更新同一个 assistant 气泡，保留旧非流式接口作为“请求尚未开始输出时”的兼容兜底。
 - 当前流式实现是接口层 SSE 增量输出：后端 runner 仍先完成一次 Agent 调用，再将最终 answer 分片推给前端。后续如果要实现真实模型 token 级流式，需要继续扩展 `AgentRunner`/`LangGraphAgentRunner` 的 streaming 协议，并接入 LangGraph/ChatOpenAI 的原生 stream。
-- 已接回旧版火山/Feedcoop 风格联网搜索 provider：配置 `SEKI_WEB_SEARCH_API_KEY` 时启用；环境 key 为空时，前端 Agent 页可传入本次请求临时火山搜索 key。无 key 时工具返回未配置提示。
-- `ChatMessageCreate`/`AgentRequest` 已新增 `web_search_api_key`，与千问临时 key 一样只用于本次请求，不写入聊天消息。
+- 已接回旧版火山/Feedcoop 风格联网搜索 provider：配置 `SEKI_WEB_SEARCH_API_KEY` 时启用；无 key 时工具返回未配置提示。
+- Chat API 已移除前端临时联网搜索 key 输入，搜索 key 统一从后端环境变量读取。
 - `RuleBasedAgentRunner` 仍有 `web_search` 关键词路由测试覆盖，但默认运行时不再使用它。
-- 前端 Agent 入口已拆分两个密钥输入：`千问 API key` 和 `火山搜索 API key`。
+- 前端 Agent 入口已移除密钥输入框，密钥统一在后端 `.env` 管理。
 - 前端 Agent 聊天区域已改为内部滚动，消息过多时滚动 `.chat-feed`，不再优先拉长整个页面。
 - LangSmith 推荐沿用 LangChain/LangGraph 原生 tracing 环境变量：`LANGSMITH_TRACING=true`、`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`，这样模型、工具、graph span 可自然进入 LangSmith；不建议在当前阶段自定义包一层 trace，以免破坏 LangGraph 原生链路。
-- 已移除运行时 `SEKI_AGENT_RUNNER`、`SEKI_WEB_SEARCH_PROVIDER` 和关键词 handoff 环境开关；默认服务路径固定为 LangGraph runner，联网搜索只看环境火山 key 或前端临时火山 key。`RuleBasedAgentRunner` 只保留为单元测试/显式注入调试构件。
+- 已移除运行时 `SEKI_AGENT_RUNNER`、`SEKI_WEB_SEARCH_PROVIDER` 和关键词 handoff 环境开关；默认服务路径固定为 LangGraph runner，联网搜索只看后端环境火山 key。`RuleBasedAgentRunner` 只保留为单元测试/显式注入调试构件。
 
 验证：
 
@@ -366,3 +366,41 @@ npm run lint
 ```
 
 结果：后端 65 passed、1 skipped；前端 build/lint 通过。
+
+## 本轮 Agent 入口改进
+
+用户反馈的 5 个问题已处理：
+
+- `frontend/index.html` 已改用 `/$this.Icon.ico` 作为网页图标。
+- Agent 入口会把最近一次 `conversation_id` 缓存在 `localStorage`，页面重新进入时调用 `GET /api/v1/chat/conversations/{conversation_id}/messages` 恢复历史消息，可继续对话。
+- `chat_messages` 现在会保存本轮 LangGraph 返回的 `tool` 消息；模型短期历史仍只回放 `user/assistant`，避免工具结果直接污染普通对话上下文。
+- 前端 Agent 页和翻译页已删除 API key 输入；Chat API 请求体不再接收 `api_key` / `web_search_api_key`。密钥统一通过后端环境变量配置。
+- `conversations` 表新增 `active_agent` 字段并兼容旧表自动 `ALTER TABLE`；`AgentService` 每轮结束后记录 `active_agent`，下一轮会把它作为 `AgentRequest.agent_name` 和 LangGraph `active_agent` 传入，使 `route_initial` 默认从上一轮结束 agent 开始。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_service.py backend\tests\test_chat.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_multi_agent_graph_factory.py
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：后端 35 passed、1 skipped；前端 lint/build 通过。
+
+## 本轮 code_agent 路由和工作目录修复
+
+- 修复切到 `code_agent` 后下一轮命中 `CodeAgentUnavailableRunner` 的问题：默认生产 runner 现在直接返回 LangGraph multi-agent runner，由图内 `route_initial` 按持久化的 `active_agent` 进入 main/code agent。
+- `CodeExecutionService` 新增 `writable_roots`，读取/执行允许根和写入/删除工作根分离。
+- 默认 code agent 可读取/执行当前用户 workspace、项目根目录和共享 skills 目录；相对路径默认落到 `data/workspace/{username}`，写入和删除限制在该用户 workspace 下。
+- code agent prompt 已补充：读取/运行项目根或 skills 文件要使用明确路径，但不要把新文件写到项目根目录。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_runner.py backend\tests\test_multi_agent_graph_factory.py backend\tests\test_code_execution_service.py backend\tests\test_code_langchain_tool_adapter.py backend\tests\test_code_agent_factory.py backend\tests\test_agent_service.py backend\tests\test_chat.py
+cd frontend
+npm run build
+```
+
+结果：后端 86 passed、1 skipped；前端 build 通过。

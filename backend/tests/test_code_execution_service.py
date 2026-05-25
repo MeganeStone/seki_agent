@@ -313,6 +313,33 @@ def test_allowed_roots_can_include_shared_skills_directory(tmp_path: Path) -> No
     assert run_result.data["stdout"] == "skill ok\n"
 
 
+def test_default_workspace_is_writable_while_project_root_is_read_only(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    workspace_root = tmp_path / "workspace" / "alice"
+    project_root.mkdir()
+    workspace_root.mkdir(parents=True)
+    (project_root / "helper.py").write_text("print('project ok')\n", encoding="utf-8")
+    svc = CodeExecutionService(
+        allowed_roots=[workspace_root, project_root],
+        default_root=workspace_root,
+        writable_roots=[workspace_root],
+    )
+
+    write_result = svc.write_text_file("notes/todo.txt", "hello")
+    (workspace_root / "notes").mkdir()
+    write_result = svc.write_text_file("notes/todo.txt", "hello")
+    read_result = svc.read_text_file(str(project_root / "helper.py"))
+    run_result = svc.run_python_script(str(project_root / "helper.py"))
+    root_write_result = svc.write_text_file(str(project_root / "new.txt"), "nope")
+
+    assert write_result.status == "succeeded"
+    assert (workspace_root / "notes" / "todo.txt").read_text(encoding="utf-8") == "hello"
+    assert read_result.status == "succeeded"
+    assert run_result.status == "succeeded"
+    assert root_write_result.status == "rejected"
+    assert root_write_result.message == "该路径不在 code agent 的可写工作目录内。"
+
+
 def test_run_allowed_command_allows_python_m_pytest(tmp_path: Path) -> None:
     svc = service(tmp_path)
 

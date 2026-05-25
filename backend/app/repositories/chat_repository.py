@@ -18,10 +18,19 @@ class ChatRepository:
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 owner_username TEXT NOT NULL,
+                active_agent TEXT NOT NULL DEFAULT 'main_agent',
                 created_at TEXT NOT NULL
             )
             """
         )
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(conversations)").fetchall()
+        }
+        if "active_agent" not in columns:
+            self.conn.execute(
+                "ALTER TABLE conversations ADD COLUMN active_agent TEXT NOT NULL DEFAULT 'main_agent'"
+            )
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -46,8 +55,8 @@ class ChatRepository:
     def create_conversation(self, conversation_id: str, owner_username: str) -> sqlite3.Row:
         created_at = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            "INSERT INTO conversations (id, owner_username, created_at) VALUES (?, ?, ?)",
-            (conversation_id, owner_username, created_at),
+            "INSERT INTO conversations (id, owner_username, active_agent, created_at) VALUES (?, ?, ?, ?)",
+            (conversation_id, owner_username, "main_agent", created_at),
         )
         self.conn.commit()
         row = self.get_conversation(conversation_id, owner_username)
@@ -57,10 +66,21 @@ class ChatRepository:
 
     def get_conversation(self, conversation_id: str, owner_username: str) -> sqlite3.Row | None:
         cursor = self.conn.execute(
-            "SELECT id, owner_username, created_at FROM conversations WHERE id = ? AND owner_username = ?",
+            "SELECT id, owner_username, active_agent, created_at FROM conversations WHERE id = ? AND owner_username = ?",
             (conversation_id, owner_username),
         )
         return cursor.fetchone()
+
+    def update_active_agent(self, conversation_id: str, owner_username: str, active_agent: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE conversations
+            SET active_agent = ?
+            WHERE id = ? AND owner_username = ?
+            """,
+            (active_agent, conversation_id, owner_username),
+        )
+        self.conn.commit()
 
     def add_message(self, message_id: str, conversation_id: str, owner_username: str, role: str, content: str) -> None:
         created_at = datetime.now(timezone.utc).isoformat()

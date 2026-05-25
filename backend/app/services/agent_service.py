@@ -4,8 +4,8 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.repositories.chat_repository import ChatRepository
-from app.schemas.chat import ChatMessageResponse, ConversationCreateResponse
-from app.services.agent_runner import AgentRequest, AgentRunner, ChatHistoryMessage
+from app.schemas.chat import ChatMessageRead, ChatMessageResponse, ConversationCreateResponse
+from app.services.agent_runner import AgentRequest, AgentResponse, AgentRunner, ChatHistoryMessage
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.code_operation_service import CodeOperationService
 from app.services.diff_service import DiffService
@@ -75,10 +75,12 @@ class AgentService:
         conversation = self.chats.get_conversation(conversation_id, owner_username)
         if conversation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        active_agent = str(conversation["active_agent"] or "main_agent")
 
         history = tuple(
             ChatHistoryMessage(role=row["role"], content=row["content"])
             for row in self.chats.list_messages(conversation_id, owner_username, limit=20)
+            if row["role"] in {"user", "assistant"}
         )
         self.chats.add_message(uuid4().hex, conversation_id, owner_username, "user", clean_message)
         result = self.runner.run(
@@ -87,12 +89,17 @@ class AgentService:
                 conversation_id=conversation_id,
                 message=clean_message,
                 use_knowledge_base=use_knowledge_base,
+                agent_name=active_agent,
                 api_key=api_key.strip() if api_key else None,
                 web_search_api_key=web_search_api_key.strip() if web_search_api_key else None,
                 history=history,
             )
         )
+        self._update_active_agent_from_result(owner_username, conversation_id, result)
         answer = result.answer
+        for item in result.messages_to_store:
+            if item.role == "tool" and item.content.strip():
+                self.chats.add_message(uuid4().hex, conversation_id, owner_username, "tool", item.content)
         self.chats.add_message(uuid4().hex, conversation_id, owner_username, "assistant", answer)
         data = result.data
         if data and data.get("requires_confirmation"):
@@ -112,3 +119,35 @@ class AgentService:
             route=result.route,
             data=data,
         )
+
+    def list_messages(
+        self,
+        owner_username: str,
+        conversation_id: str,
+        limit: int = 100,
+    ) -> list[ChatMessageRead]:
+        conversation = self.chats.get_conversation(conversation_id, owner_username)
+        if conversation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        return [
+            ChatMessageRead(
+                id=row["id"],
+                conversation_id=row["conversation_id"],
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
+            for row in self.chats.list_messages(conversation_id, owner_username, limit=limit)
+        ]
+
+    def _update_active_agent_from_result(
+        self,
+        owner_username: str,
+        conversation_id: str,
+        result: AgentResponse,
+    ) -> None:
+        data = result.data or {}
+        next_agent = str(data.get("active_agent") or data.get("agent_name") or result.route or "main_agent")
+        if next_agent not in {"main_agent", "code_agent"}:
+            next_agent = "main_agent"
+        self.chats.update_active_agent(conversation_id, owner_username, next_agent)

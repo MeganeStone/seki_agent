@@ -301,8 +301,8 @@ MVP 可以先不做确认 API，只把 Confirm 类操作拒绝并提示“该操
 - 支持 `list_dir`、`read_text_file`、`write_text_file`。
 - 写文件默认不覆盖已有文件，必须显式 `overwrite=true`。
 - 默认限制读取和写入 1MB，可通过配置调整。
-- 默认允许根目录为项目根目录和 workspace，可通过配置调整。
-- 默认允许根目录也包含共享 skills 目录；skills 是所有用户通用能力，不属于单个用户 workspace。
+- 默认允许读取/执行根目录为当前用户 workspace、项目根目录和共享 skills 目录，可通过配置调整。
+- 默认可写工作目录为 `data/workspace/{username}`；项目根目录和共享 skills 目录用于读取/执行，不作为默认写入位置。
 - 默认拒绝 `.env`、私钥、证书、数据库文件等敏感文件名或后缀。
 - 每次调用都会生成内存审计记录，包含用户、会话、agent、工具名、状态、目标和时间。
 
@@ -504,6 +504,6 @@ SEKI_CODE_AGENT_CONFIRMED_COMMAND_PREFIXES='["python --version"]'
 Agent 入口默认运行时已收敛为 LangGraph，不再通过环境变量切换到 rule runner，也不再通过关键词猜测 code_agent handoff。
 
 - 前端关闭“使用知识库 / RAG”时，仍由 LangGraph Agent 和系统 prompt 判断是否普通聊天。
-- API key 仍遵循环境配置优先，其次使用前端临时 key。
+- API key 统一使用后端环境变量配置，前端不再传入临时 key。
 - `RuleBasedAgentRunner` 仅保留为单元测试/显式注入调试构件，不作为本地运行入口。
 - code_agent 交接应由 LangGraph Agent 通过 `transfer_to_code_agent` 工具决定。

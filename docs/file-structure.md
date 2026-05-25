@@ -24,7 +24,7 @@
 
 - `config.py`：集中读取环境变量，形成 `Settings`。
 - `security.py`：密码哈希、JWT 创建和解析。
-- `api_keys.py`：临时 API key 环境变量上下文，避免把前端临时 key 持久化。
+- `api_keys.py`：临时环境变量上下文，供 legacy 调用时复用统一配置。
 
 ### backend/app/api
 
@@ -35,7 +35,7 @@
 
 - `auth.py`：登录和当前用户接口。
 - `files.py`：文件上传、列表、下载、删除接口。
-- `chat.py`：Agent conversation 创建、非流式消息、SSE 流式消息接口。
+- `chat.py`：Agent conversation 创建、历史消息、非流式消息、SSE 流式消息接口。
 - `translation.py`：翻译任务接口。
 - `spi.py`：SPI 解析任务接口。
 - `diff.py`：版本差分任务接口。
@@ -137,7 +137,7 @@
 ### frontend/src/pages
 
 - `LoginPage.tsx`：登录页。
-- `ChatPage.tsx`：Agent 对话页，支持流式显示、临时 key、工具结果和 pending operation。
+- `ChatPage.tsx`：Agent 对话页，支持历史恢复、流式显示、工具结果和 pending operation。
 - `FilesPage.tsx`：文件管理页。
 - `TranslationPage.tsx`：文档翻译页。
 - `SpiPage.tsx`：SPI 解析页。

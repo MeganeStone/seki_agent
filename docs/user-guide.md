@@ -47,10 +47,8 @@ SEKI_LEGACY_SRC_DIR="D:/seki/AI/Langchain/seki_agent/backend/legacy"
 ```env
 SEKI_RAG_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 SEKI_RAG_MODEL_NAME="qwen-plus"
-# 可选：也可以在前端 Agent 页面输入临时千问 key
 SEKI_RAG_API_KEY="你的千问或兼容 OpenAI API key"
 
-# 可选：也可以在前端 Agent 页面输入临时火山搜索 key
 SEKI_WEB_SEARCH_API_KEY="你的火山搜索 key"
 SEKI_WEB_SEARCH_API_URL="https://open.feedcoopapi.com/search_api/web_search"
 ```
@@ -125,8 +123,8 @@ cd D:\seki\AI\Langchain\seki_agent\backend
 
 - 文件管理：先上传需要翻译、解析或比较的文件。
 - Agent 入口：
-  - 可输入千问 API key 和火山搜索 API key，作为本次请求临时 key。
   - 可直接让 Agent 查知识库、联网搜索、找文件、创建翻译/SPI/diff 任务。
+  - 切换到其他页面再回来，会恢复最近一次对话并可继续发送消息。
   - code agent 高风险操作会出现确认卡片。
 - 文档翻译：手动选择 workspace 文件并创建翻译任务。
 - SPI log 解析：选择 `.log` 文件创建解析任务。
@@ -226,17 +224,11 @@ $env:SEKI_RAG_API_KEY='你的 key'
 
 ### Agent 提示缺少 API key
 
-可以二选一：
-
-- 在 `.env` 配置 `SEKI_RAG_API_KEY`。
-- 在前端 Agent 页面输入临时千问 API key。
+在 `.env` 配置 `SEKI_RAG_API_KEY`，然后重启后端。
 
 ### 联网搜索不可用
 
-可以二选一：
-
-- 在 `.env` 配置 `SEKI_WEB_SEARCH_API_KEY`。
-- 在前端 Agent 页面输入临时火山搜索 API key。
+在 `.env` 配置 `SEKI_WEB_SEARCH_API_KEY`，然后重启后端。
 
 ### Docker 前端访问不到后端
 

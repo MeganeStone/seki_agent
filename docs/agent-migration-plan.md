@@ -95,13 +95,13 @@
 - 已补充 `AgentService` 层工具路由测试，覆盖 translation、SPI、diff 的显式调用。
 - 已新增 `HandoffAgentRunner` 和 `CodeAgentUnavailableRunner`，用于建立主 Agent/code agent 的隔离边界；默认不再通过关键词硬编码判断是否进入 `code_agent`。
 - 已在 `AgentRequest` 增加 `agent_name`，并将 LangGraph checkpointer `thread_id` 调整为 `owner_username:conversation_id:agent_name`，为主 Agent/code agent 上下文隔离打基础。
-- Chat/翻译接口已支持前端传入临时 API key，后端优先使用环境配置 key，环境缺失时才使用请求 key；两者都没有时提示用户输入或联系维护者配置。
+- Chat/翻译入口当前已收敛为后端环境变量配置 API key；前端不再传入临时 key，缺 key 时提示维护者配置后端环境变量。
 - 已新增 `transfer_to_code_agent` handoff 工具和父级 multi-agent graph：主 Agent 可通过 LangGraph `Command` 交接到 `code_agent` 占位节点，恢复旧框架“Agent 自己判断是否交接”的方向。
 
 下一步建议：
 
 - 增加真实 LangGraph runner 的工具选择评估用例，先用 fake tool/fake data 验证模型是否按 prompt 正确选择工具。
-- 继续迁移旧 `code_agent`：真实 LangGraph handoff 骨架已落地，已新增 `docs/code-agent-design.md`，并已实现和接入 `CodeExecutionService`：`list_dir/read_text_file/write_text_file/run_python_script`，默认禁用删除和任意 shell。默认 allowed roots 包含项目根、workspace 和共享 skills 目录，为后续 skills 热插拔预留。
+- 继续迁移旧 `code_agent`：真实 LangGraph handoff 骨架已落地，已新增 `docs/code-agent-design.md`，并已实现和接入 `CodeExecutionService`：`list_dir/read_text_file/write_text_file/run_python_script`，默认禁用任意 shell。默认 allowed roots 包含当前用户 workspace、项目根和共享 skills 目录，为后续 skills 热插拔预留；默认写入限制在 `data/workspace/{username}`。
 
 ## 7. 旧 Agent 与新后端差距清单
 

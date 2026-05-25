@@ -1,5 +1,10 @@
 import { API_BASE_URL } from './client'
-import type { ChatMessageResponse, ConversationCreateResponse, SendChatMessagePayload } from '../types/chat'
+import type {
+  ChatMessageRead,
+  ChatMessageResponse,
+  ConversationCreateResponse,
+  SendChatMessagePayload,
+} from '../types/chat'
 
 function authHeaders(accessToken: string): HeadersInit {
   // Chat 接口都需要 Bearer token，且请求体统一使用 JSON。
@@ -47,6 +52,21 @@ export async function sendChatMessage(
 
   if (!response.ok) {
     throw await parseError(response, '消息发送失败')
+  }
+
+  return response.json()
+}
+
+export async function listChatMessages(
+  accessToken: string,
+  conversationId: string,
+): Promise<ChatMessageRead[]> {
+  const response = await fetch(`${API_BASE_URL}/chat/conversations/${conversationId}/messages`, {
+    headers: authHeaders(accessToken),
+  })
+
+  if (!response.ok) {
+    throw await parseError(response, '对话历史获取失败')
   }
 
   return response.json()

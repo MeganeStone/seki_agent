@@ -12,5 +12,4 @@ export type TranslationTask = {
 export type CreateTranslationTaskPayload = {
   file_id: string
   target_language: string
-  api_key?: string
 }

@@ -63,6 +63,46 @@
   color: #ffffff;
 }
 
+.account-panel {
+  margin-top: auto;
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid #2b405a;
+}
+
+.account-panel span {
+  min-width: 0;
+  color: #c8d8eb;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-panel button,
+.account-panel a {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #1c2331;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+}
+
+.account-panel a {
+  display: grid;
+  place-items: center;
+}
+
+.account-panel button:hover,
+.account-panel a:hover {
+  background: #dfe5ee;
+}
+
 .workspace {
   padding: 28px;
   display: grid;

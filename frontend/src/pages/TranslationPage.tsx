@@ -4,12 +4,14 @@ import { createTranslationTask, getTranslationTask } from '../api/translation'
 import TaskResultPanel from '../components/TaskResultPanel'
 import type { WorkspaceFile } from '../types/files'
 import type { TranslationTask } from '../types/translation'
+import { scopedStorageKey } from '../utils/storageScope'
 
 type TranslationPageProps = {
   accessToken: string | null
+  username: string | null
 }
 
-const LAST_TASK_STORAGE_KEY = 'seki_last_translation_task'
+const LAST_TASK_BASE_KEY = 'seki_last_translation_task'
 const targetLanguages = ['英语', '日语', '中文', '德语', '法语']
 const supportedSuffixes = ['.pptx', '.xlsx', '.docx']
 
@@ -30,10 +32,10 @@ function translatedDownloadName(filename: string | undefined, targetLanguage: st
   return `${filename.slice(0, dotIndex)}_${targetLanguage}${filename.slice(dotIndex)}`
 }
 
-function readCachedTask(): TranslationTask | null {
+function readCachedTask(storageKey: string): TranslationTask | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
     return JSON.parse(raw) as TranslationTask
   } catch {
@@ -41,25 +43,26 @@ function readCachedTask(): TranslationTask | null {
   }
 }
 
-function persistTask(task: TranslationTask | null): void {
+function persistTask(storageKey: string, task: TranslationTask | null): void {
   if (typeof window === 'undefined') return
   try {
     if (task) {
-      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+      window.localStorage.setItem(storageKey, JSON.stringify(task))
     } else {
-      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
     }
   } catch {
     // ignore storage errors
   }
 }
 
-function TranslationPage({ accessToken }: TranslationPageProps) {
+function TranslationPage({ accessToken, username }: TranslationPageProps) {
+  const taskStorageKey = scopedStorageKey(LAST_TASK_BASE_KEY, username)
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [selectedFileId, setSelectedFileId] = useState('')
   const [targetLanguage, setTargetLanguage] = useState(targetLanguages[0])
   const [customLanguage, setCustomLanguage] = useState('')
-  const [task, setTask] = useState<TranslationTask | null>(() => readCachedTask())
+  const [task, setTask] = useState<TranslationTask | null>(null)
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -95,7 +98,10 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
 
     let isCurrent = true
     const token = accessToken
-    const cachedTask = readCachedTask()
+    const cachedTask = readCachedTask(taskStorageKey)
+    queueMicrotask(() => {
+      if (isCurrent) setTask(cachedTask)
+    })
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -121,10 +127,10 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
           const latestTask = await getTranslationTask(token, cachedTask.task_id)
           if (!isCurrent) return
           setTask(latestTask)
-          persistTask(latestTask)
+          persistTask(taskStorageKey, latestTask)
         } catch {
           if (isCurrent) {
-            persistTask(null)
+            persistTask(taskStorageKey, null)
           }
         }
       })()
@@ -133,7 +139,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
     return () => {
       isCurrent = false
     }
-  }, [accessToken])
+  }, [accessToken, taskStorageKey])
 
   async function handleCreateTask() {
     if (!accessToken || !selectedFileId) return
@@ -146,7 +152,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
         target_language: effectiveTargetLanguage,
       })
       setTask(created)
-      persistTask(created)
+      persistTask(taskStorageKey, created)
     } catch (error) {
       setError(error instanceof Error ? error.message : '翻译任务创建失败')
     } finally {
@@ -162,7 +168,7 @@ function TranslationPage({ accessToken }: TranslationPageProps) {
     try {
       const refreshed = await getTranslationTask(accessToken, task.task_id)
       setTask(refreshed)
-      persistTask(refreshed)
+      persistTask(taskStorageKey, refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : '翻译任务查询失败')
     } finally {

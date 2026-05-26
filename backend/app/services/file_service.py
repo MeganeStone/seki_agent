@@ -27,6 +27,7 @@ class FileService:
         self.max_upload_size_bytes = max_upload_size_bytes or settings.max_upload_size_bytes
 
     def list_files(self, owner_username: str) -> list[FileRead]:
+        self._sync_workspace_files(owner_username)
         return [self._to_schema(row) for row in self.files.list_for_owner(owner_username)]
 
     def get_file(self, owner_username: str, file_id: str) -> FileRead:
@@ -104,6 +105,33 @@ class FileService:
         path = self.workspace_dir / safe_owner
         self._ensure_under_workspace(path)
         return path
+
+    def _sync_workspace_files(self, owner_username: str) -> None:
+        """把 workspace 目录里尚未登记的文件补录到 files 表。
+
+        code agent 会直接写入用户 workspace，不会走 upload API；列表接口在返回前
+        先做一次轻量同步，保证文件管理页能看到 workspace 下的全部文件。
+        """
+        owner_dir = self._owner_dir(owner_username)
+        if not owner_dir.exists():
+            return
+
+        owner_root = owner_dir.resolve()
+        for path in owner_root.rglob("*"):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            self._ensure_under_workspace(resolved)
+            if self.files.get_by_storage_path(owner_username, str(resolved)) is not None:
+                continue
+            relative_name = path.relative_to(owner_root).as_posix()
+            self.files.create(
+                uuid4().hex,
+                owner_username,
+                relative_name,
+                str(resolved),
+                resolved.stat().st_size,
+            )
 
     def _ensure_under_workspace(self, path: Path) -> None:
         workspace = self.workspace_dir.resolve()

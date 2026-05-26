@@ -7,6 +7,8 @@ from app.services.agent_runner import AgentResponse
 
 class MultiAgentState(TypedDict):
     messages: list
+    main_agent_messages: NotRequired[list]
+    code_agent_messages: NotRequired[list]
     active_agent: NotRequired[str]
     owner_username: NotRequired[str]
     conversation_id: NotRequired[str]
@@ -42,36 +44,26 @@ def create_multi_agent_graph(
         code_agent_runner = CodeAgentUnavailableRunner()
 
     def call_main_agent(state: MultiAgentState):
+        state = _state_for_agent(state, main_agent_name)
         try:
             result = main_agent_graph.invoke(dict(state))
         except ParentCommand as exc:
             command = exc.args[0]
-            return Command(
-                goto=command.goto,
-                update=command.update,
-            )
+            return _handoff_command(Command, state, command)
         if isinstance(result, Command) and result.graph == Command.PARENT:
-            return Command(
-                goto=result.goto,
-                update=result.update,
-            )
+            return _handoff_command(Command, state, result)
         return result
 
     def call_code_agent(state: MultiAgentState):
+        state = _state_for_agent(state, code_agent_name)
         if code_agent_graph is not None:
             try:
                 result = code_agent_graph.invoke(dict(state))
             except ParentCommand as exc:
                 command = exc.args[0]
-                return Command(
-                    goto=command.goto,
-                    update=command.update,
-                )
+                return _handoff_command(Command, state, command)
             if isinstance(result, Command) and result.graph == Command.PARENT:
-                return Command(
-                    goto=result.goto,
-                    update=result.update,
-                )
+                return _handoff_command(Command, state, result)
             if isinstance(result, dict):
                 result = dict(result)
                 result.setdefault("agent_name", code_agent_name)
@@ -124,6 +116,60 @@ def _response_to_state(response: AgentResponse, agent_name: str) -> dict:
         "active_agent": agent_name,
         "messages": [{"role": "assistant", "content": response.answer}],
     }
+
+
+def _handoff_command(command_cls, state: MultiAgentState, command):
+    goto = command.goto
+    update = dict(command.update or {})
+    if isinstance(goto, str):
+        update["active_agent"] = goto
+        update["agent_name"] = goto
+        update["messages"] = _messages_for_agent(state, goto)
+    return command_cls(goto=goto, update=update)
+
+
+def _state_for_agent(state: MultiAgentState, agent_name: str) -> MultiAgentState:
+    clean_state = dict(state)
+    clean_state["active_agent"] = agent_name
+    clean_state["agent_name"] = agent_name
+    clean_state["messages"] = _messages_for_agent(state, agent_name)
+    return clean_state
+
+
+def _messages_for_agent(state: MultiAgentState, agent_name: str) -> list:
+    history_key = "code_agent_messages" if agent_name == "code_agent" else "main_agent_messages"
+    history = list(state.get(history_key, []))
+    current_user_message = _last_user_message(state)
+    if current_user_message is None:
+        return history or _fallback_messages(state)
+    if history and _messages_equivalent(history[-1], current_user_message):
+        return history
+    return [*history, current_user_message]
+
+
+def _last_user_message(state: MultiAgentState):
+    messages = state.get("messages", [])
+    for message in reversed(messages):
+        if _message_role(message) in {"user", "human"}:
+            return message
+    return None
+
+
+def _fallback_messages(state: MultiAgentState) -> list:
+    messages = state.get("messages", [])
+    return messages[-1:] if messages else []
+
+
+def _messages_equivalent(left: object, right: object) -> bool:
+    return _message_role(left) == _message_role(right) and _message_content(left) == _message_content(right)
+
+
+def _message_role(message: object) -> str:
+    if isinstance(message, dict):
+        role = message.get("role") or message.get("type")
+    else:
+        role = getattr(message, "role", None) or getattr(message, "type", None)
+    return str(role or "").lower()
 
 
 def _message_content(message: object) -> str:

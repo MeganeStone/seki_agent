@@ -22,6 +22,7 @@
 ### 文件管理
 
 - 当前用户可上传、列出、下载、删除 workspace 文件。
+- 列表接口会同步扫描 `data/workspace/{username}` 下尚未登记的文件，code agent 直接写入的文件也会出现在文件管理页。
 - 文件名保留中文，仅清理 Windows 非法字符。
 - 单文件上传默认限制 600MB。
 
@@ -38,7 +39,12 @@
 - Chat API 已统一作为 Agent 对话入口。
 - 默认运行时已收敛为 LangGraph runner，不再通过环境变量切换 rule/graph。
 - `RuleBasedAgentRunner` 仅保留为单元测试/显式注入调试构件。
-- Agent runner 会携带当前 conversation 最近 20 条 user/assistant 历史；工具消息会落库，但暂不作为模型历史回放。
+- Agent runner 会按 `active_agent` 携带最近 20 条 user/assistant/tool 历史；主 Agent 与 code agent 通过 `agent_name` 字段隔离上下文。
+- LangGraph 父图在每次调用 main/code 子图前都会重建目标 agent state：使用目标 agent 自己的历史加当前用户请求，避免 LangSmith 里目标 agent span 看到来源 agent 的 assistant/tool 历史，同时保留本 agent 的连续记忆。
+- `AgentRequest.agent_histories` 同时携带 main/code 两套历史；本轮消息归属优先看明确的 `result.route=main_agent/code_agent`，否则按最终 `data.agent_name` / `data.active_agent` 归属。
+- LangGraph runner 的 `thread_id` 使用 `owner_username:conversation_id`，同一个 conversation 在 LangSmith 上归为同一条 thread；agent 隔离不再通过拆 thread 实现。
+- 工具调用内部链路会落库并参与下一轮 Agent 上下文：`chat_messages.metadata` 保存 assistant `tool_calls` 和 tool `tool_call_id` / `tool_name`，保证 LangGraph replay 时仍有合法的“AI 调工具消息 -> tool 结果消息”配对。
+- Chat 历史 API 和前端对话页不会展示 tool 消息，也不会展示带 `tool_calls` 的内部 assistant 消息，只展示用户消息和最终 assistant 回复。
 - conversation 会持久化上一轮结束时的 `active_agent`，下一轮默认从该 agent 进入，保持旧版 `route_initial` 行为。
 - 系统 prompt 已包含 SIS/本田/TSU/seki 开发者身份设定。
 - API key 统一由后端环境变量提供，前端不再提供临时 key 输入。
@@ -49,7 +55,7 @@
 ### Agent 工具
 
 - RAG 工具：回答公司业务/知识库问题。
-- web_search 工具：接回旧版火山/Feedcoop 兼容搜索 provider。
+- web_search 工具：接回旧版火山/Feedcoop 兼容搜索 provider；配置 `SEKI_WEB_SEARCH_API_KEY` 后启用，没有 key 时返回未配置提示。
 - file_lookup 工具：按当前用户 workspace 文件名/后缀查找 file_id。
 - translation/SPI/diff 工具：调用对应 service 创建任务。
 - code_agent handoff：主 Agent 可通过 `transfer_to_code_agent` 交接到 code agent。
@@ -59,7 +65,7 @@
 - 已有独立 code agent graph 和工具适配层。
 - 文件能力：列目录、读小文本、写小文本、创建目录；默认写入当前用户 `data/workspace/{username}`，项目根和 skills 目录只用于读取/执行。
 - 受限执行：可运行允许目录内 Python 脚本，可执行白名单命令。
-- 删除策略：本轮 code agent 创建的内容可直接清理；既有内容需要 pending operation。
+- 删除策略：当前用户 workspace 内的文件/目录可直接删除；目录必须显式 `recursive=true`；项目根和 shared skills 仍只读不可删除。
 - pending operation 后端和前端确认 UI 已接入。
 - 任意 shell 字符串和高危命令仍未开放。
 
@@ -72,7 +78,9 @@
 - SPI log 解析页。
 - 版本差分比较页。
 - 任务历史页。
+- 翻译/SPI/差分/Chat 页面的最近任务或 conversation 缓存按用户名隔离 localStorage。
 - Agent 聊天区域已改为内部滚动。
+- 侧边栏显示当前账号并提供退出登录，退出时清除 token 和当前用户名后回到登录页。
 
 ### 可观测性
 

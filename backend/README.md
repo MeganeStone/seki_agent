@@ -53,6 +53,9 @@ SEKI_CODE_AGENT_CONFIRMED_COMMAND_PREFIXES='["python --version"]'
 Unknown commands that do not match either list become pending operations, but
 will not execute after confirmation until a matching confirmed prefix is
 configured. Dangerous commands and shell control operators are still rejected.
+The code agent can delete files and directories under the current user's
+workspace. Project root and shared skills paths are readable/executable but not
+deletable.
 
 The runtime Agent path is LangGraph, where the main agent decides handoff
 through tools instead of backend keyword guesses. `RuleBasedAgentRunner` is

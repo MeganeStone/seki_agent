@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from datetime import datetime, timezone
 
 
@@ -39,16 +40,36 @@ class ChatRepository:
                 owner_username TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT 'main_agent',
+                metadata TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(id)
             )
             """
         )
+        message_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(chat_messages)").fetchall()
+        }
+        if "agent_name" not in message_columns:
+            self.conn.execute(
+                "ALTER TABLE chat_messages ADD COLUMN agent_name TEXT NOT NULL DEFAULT 'main_agent'"
+            )
+        if "metadata" not in message_columns:
+            self.conn.execute(
+                "ALTER TABLE chat_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversations_owner_username ON conversations(owner_username)"
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id)"
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_agent
+            ON chat_messages(conversation_id, agent_name)
+            """
         )
         self.conn.commit()
 
@@ -82,14 +103,24 @@ class ChatRepository:
         )
         self.conn.commit()
 
-    def add_message(self, message_id: str, conversation_id: str, owner_username: str, role: str, content: str) -> None:
+    def add_message(
+        self,
+        message_id: str,
+        conversation_id: str,
+        owner_username: str,
+        role: str,
+        content: str,
+        agent_name: str = "main_agent",
+        metadata: dict | None = None,
+    ) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":"))
         self.conn.execute(
             """
-            INSERT INTO chat_messages (id, conversation_id, owner_username, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO chat_messages (id, conversation_id, owner_username, role, content, agent_name, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, conversation_id, owner_username, role, content, created_at),
+            (message_id, conversation_id, owner_username, role, content, agent_name, metadata_json, created_at),
         )
         self.conn.commit()
 
@@ -98,16 +129,25 @@ class ChatRepository:
         conversation_id: str,
         owner_username: str,
         limit: int = 20,
+        *,
+        exclude_roles: tuple[str, ...] | None = None,
+        agent_name: str | None = None,
     ) -> list[sqlite3.Row]:
-        cursor = self.conn.execute(
-            """
-            SELECT id, conversation_id, owner_username, role, content, created_at
+        query = """
+            SELECT id, conversation_id, owner_username, role, content, agent_name, metadata, created_at
             FROM chat_messages
             WHERE conversation_id = ? AND owner_username = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (conversation_id, owner_username, max(1, min(limit, 100))),
-        )
+        """
+        params: list[object] = [conversation_id, owner_username]
+        if agent_name is not None:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        if exclude_roles:
+            placeholders = ", ".join("?" for _ in exclude_roles)
+            query += f" AND role NOT IN ({placeholders})"
+            params.extend(exclude_roles)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 100)))
+        cursor = self.conn.execute(query, params)
         rows = list(cursor.fetchall())
         return list(reversed(rows))

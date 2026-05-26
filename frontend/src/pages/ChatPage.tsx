@@ -8,12 +8,14 @@ import { getSpiTask } from '../api/spi'
 import { getTranslationTask } from '../api/translation'
 import type { ChatTurn } from '../types/chat'
 import type { CodeOperation } from '../types/codeOperations'
+import { scopedStorageKey } from '../utils/storageScope'
 
 type ChatPageProps = {
   accessToken: string | null
+  username: string | null
 }
 
-const LAST_CONVERSATION_KEY = 'seki_last_chat_conversation_id'
+const LAST_CONVERSATION_BASE_KEY = 'seki_last_chat_conversation_id'
 
 function stringValue(data: Record<string, unknown>, key: string): string | null {
   // 工具返回的 data 是开放结构，前端展示前统一做类型收窄，避免渲染时报错。
@@ -93,11 +95,12 @@ function operationTarget(operation: CodeOperation): string | null {
   return typeof target === 'string' && target ? target : null
 }
 
-function ChatPage({ accessToken }: ChatPageProps) {
+function ChatPage({ accessToken, username }: ChatPageProps) {
+  const conversationStorageKey = scopedStorageKey(LAST_CONVERSATION_BASE_KEY, username)
   // ChatPage 同时承担普通对话、工具任务展示、code agent 待确认操作三个职责。
   // 这些状态暂时保留在页面内，等交互稳定后再考虑拆成更小组件。
   const [conversationId, setConversationId] = useState(
-    () => window.localStorage.getItem(LAST_CONVERSATION_KEY) ?? '',
+    () => window.localStorage.getItem(conversationStorageKey) ?? '',
   )
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [message, setMessage] = useState('')
@@ -115,25 +118,38 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
   useEffect(() => {
     if (!accessToken) return
-    const savedConversationId = window.localStorage.getItem(LAST_CONVERSATION_KEY)
-    if (!savedConversationId) return
-
     let isCurrent = true
+    const savedConversationId = window.localStorage.getItem(conversationStorageKey)
+    if (!savedConversationId) {
+      queueMicrotask(() => {
+        if (!isCurrent) return
+        setConversationId('')
+        setTurns([])
+      })
+      return () => {
+        isCurrent = false
+      }
+    }
+    queueMicrotask(() => {
+      if (isCurrent) setConversationId(savedConversationId)
+    })
+
     listChatMessages(accessToken, savedConversationId)
       .then((messages) => {
         if (!isCurrent) return
         setTurns(
-          messages.map((item) => ({
-            id: item.id,
-            role: item.role === 'tool' ? 'tool' : item.role === 'user' ? 'user' : 'assistant',
-            content: item.content,
-            route: item.role === 'tool' ? 'tool' : undefined,
-          })),
+          messages
+            .filter((item) => item.role !== 'tool')
+            .map((item) => ({
+              id: item.id,
+              role: item.role === 'user' ? 'user' : 'assistant',
+              content: item.content,
+            })),
         )
       })
       .catch(() => {
         if (!isCurrent) return
-        window.localStorage.removeItem(LAST_CONVERSATION_KEY)
+        window.localStorage.removeItem(conversationStorageKey)
         setConversationId('')
         setTurns([])
       })
@@ -141,7 +157,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
     return () => {
       isCurrent = false
     }
-  }, [accessToken])
+  }, [accessToken, conversationStorageKey])
 
   async function ensureConversation(): Promise<string> {
     // 会话采用懒创建：用户第一次发送消息时才向后端创建 conversation。
@@ -150,7 +166,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
     const created = await createConversation(accessToken)
     setConversationId(created.conversation_id)
-    window.localStorage.setItem(LAST_CONVERSATION_KEY, created.conversation_id)
+    window.localStorage.setItem(conversationStorageKey, created.conversation_id)
     return created.conversation_id
   }
 
@@ -245,7 +261,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
     setTurns([])
     setMessage('')
     setError('')
-    window.localStorage.removeItem(LAST_CONVERSATION_KEY)
+    window.localStorage.removeItem(conversationStorageKey)
   }
 
   async function handleRefreshToolTurn(turn: ChatTurn) {
@@ -444,7 +460,7 @@ function ChatPage({ accessToken }: ChatPageProps) {
 
           return (
             <article className={`chat-turn ${turn.role}`} key={turn.id}>
-              <strong>{turn.role === 'user' ? '你' : turn.role === 'tool' ? '工具' : 'Seki Agent'}</strong>
+              <strong>{turn.role === 'user' ? '你' : 'Seki Agent'}</strong>
               <p>{turn.content}</p>
               {turn.sources && turn.sources.length > 0 && (
                 <div className="source-list">

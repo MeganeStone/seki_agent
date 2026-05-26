@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -77,12 +78,11 @@ class AgentService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
         active_agent = str(conversation["active_agent"] or "main_agent")
 
-        history = tuple(
-            ChatHistoryMessage(role=row["role"], content=row["content"])
-            for row in self.chats.list_messages(conversation_id, owner_username, limit=20)
-            if row["role"] in {"user", "assistant"}
-        )
-        self.chats.add_message(uuid4().hex, conversation_id, owner_username, "user", clean_message)
+        agent_histories = {
+            agent_name: self._history_for_agent(conversation_id, owner_username, agent_name)
+            for agent_name in ("main_agent", "code_agent")
+        }
+        history = agent_histories.get(active_agent, ())
         result = self.runner.run(
             AgentRequest(
                 owner_username=owner_username,
@@ -93,14 +93,42 @@ class AgentService:
                 api_key=api_key.strip() if api_key else None,
                 web_search_api_key=web_search_api_key.strip() if web_search_api_key else None,
                 history=history,
+                agent_histories=agent_histories,
             )
         )
         self._update_active_agent_from_result(owner_username, conversation_id, result)
+        response_agent = self._response_agent_name(active_agent, result)
+        self.chats.add_message(
+            uuid4().hex,
+            conversation_id,
+            owner_username,
+            "user",
+            clean_message,
+            agent_name=response_agent,
+        )
         answer = result.answer
         for item in result.messages_to_store:
-            if item.role == "tool" and item.content.strip():
-                self.chats.add_message(uuid4().hex, conversation_id, owner_username, "tool", item.content)
-        self.chats.add_message(uuid4().hex, conversation_id, owner_username, "assistant", answer)
+            if item.role not in {"assistant", "tool"}:
+                continue
+            if not item.content.strip() and not (item.metadata or {}).get("tool_calls"):
+                continue
+            self.chats.add_message(
+                uuid4().hex,
+                conversation_id,
+                owner_username,
+                item.role,
+                item.content,
+                agent_name=response_agent,
+                metadata=item.metadata,
+            )
+        self.chats.add_message(
+            uuid4().hex,
+            conversation_id,
+            owner_username,
+            "assistant",
+            answer,
+            agent_name=response_agent,
+        )
         data = result.data
         if data and data.get("requires_confirmation"):
             operation = CodeOperationService(self.conn).create_pending_from_result(
@@ -120,6 +148,27 @@ class AgentService:
             data=data,
         )
 
+    def _history_for_agent(
+        self,
+        conversation_id: str,
+        owner_username: str,
+        agent_name: str,
+    ) -> tuple[ChatHistoryMessage, ...]:
+        return tuple(
+            ChatHistoryMessage(
+                role=row["role"],
+                content=row["content"],
+                metadata=self._message_metadata(row),
+            )
+            for row in self.chats.list_messages(
+                conversation_id,
+                owner_username,
+                limit=20,
+                agent_name=agent_name,
+            )
+            if row["role"] in {"user", "assistant", "tool"}
+        )
+
     def list_messages(
         self,
         owner_username: str,
@@ -137,8 +186,23 @@ class AgentService:
                 content=row["content"],
                 created_at=row["created_at"],
             )
-            for row in self.chats.list_messages(conversation_id, owner_username, limit=limit)
+            for row in self.chats.list_messages(
+                conversation_id,
+                owner_username,
+                limit=limit,
+                exclude_roles=("tool",),
+            )
+            if not (row["role"] == "assistant" and (self._message_metadata(row) or {}).get("tool_calls"))
         ]
+
+    @staticmethod
+    def _response_agent_name(active_agent: str, result: AgentResponse) -> str:
+        data = result.data or {}
+        for candidate in (result.route, data.get("agent_name"), data.get("active_agent"), active_agent):
+            agent_name = str(candidate or "")
+            if agent_name in {"main_agent", "code_agent"}:
+                return agent_name
+        return active_agent
 
     def _update_active_agent_from_result(
         self,
@@ -151,3 +215,14 @@ class AgentService:
         if next_agent not in {"main_agent", "code_agent"}:
             next_agent = "main_agent"
         self.chats.update_active_agent(conversation_id, owner_username, next_agent)
+
+    @staticmethod
+    def _message_metadata(row: sqlite3.Row) -> dict | None:
+        raw = row["metadata"] if "metadata" in row.keys() else None
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) and value else None

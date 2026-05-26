@@ -1,4 +1,6 @@
 from collections.abc import Callable
+from hashlib import sha1
+from typing import Any
 
 from app.core.api_keys import temporary_env_api_key
 from app.services.agent_prompts import TBOX_AGENT_SYSTEM_PROMPT
@@ -29,27 +31,33 @@ class LangGraphAgentRunner:
     def run(self, request: AgentRequest) -> AgentResponse:
         """调用 LangGraph graph。
 
-        thread_id 使用 `用户:会话:agent` 组合，保证不同用户、不同会话、主/子
-        Agent 的记忆互不串线。
+        thread_id 使用 `用户:会话` 组合，让 LangSmith 和 LangGraph checkpoint 把同一个
+        conversation 归为同一条 thread；主/子 Agent 的消息隔离在父图 handoff 和子图
+        state 清洗中完成。
         """
         graph = self._get_graph(request)
+        agent_histories = request.agent_histories or {request.agent_name: request.history}
+        history_messages = LangGraphAgentRunner._history_messages_for_graph(
+            agent_histories.get(request.agent_name, request.history)[-20:]
+        )
         payload = {
             "owner_username": request.owner_username,
             "conversation_id": request.conversation_id,
             "agent_name": request.agent_name,
             "active_agent": request.agent_name,
-            "messages": [
-                {"role": item.role, "content": item.content}
-                for item in request.history[-20:]
-                if item.role in {"user", "assistant"} and item.content.strip()
-            ]
-            + [{"role": "user", "content": request.message}],
+            "messages": history_messages + [{"role": "user", "content": request.message}],
+            "main_agent_messages": LangGraphAgentRunner._history_messages_for_graph(
+                agent_histories.get("main_agent", ())[-20:]
+            ),
+            "code_agent_messages": LangGraphAgentRunner._history_messages_for_graph(
+                agent_histories.get("code_agent", ())[-20:]
+            ),
             "system_prompt": self.system_prompt,
             "use_knowledge_base": request.use_knowledge_base,
         }
         config = {
             "configurable": {
-                "thread_id": f"{request.owner_username}:{request.conversation_id}:{request.agent_name}",
+                "thread_id": f"{request.owner_username}:{request.conversation_id}",
                 "checkpoint_ns": "seki-agent",
             }
         }
@@ -61,7 +69,7 @@ class LangGraphAgentRunner:
         """按用户会话懒创建 graph 实例，避免所有会话共享同一个内存 checkpointer。"""
         if self._graph is None:
             self._graph = {}
-        key = f"{request.owner_username}:{request.conversation_id}:{request.agent_name}"
+        key = f"{request.owner_username}:{request.conversation_id}"
         if isinstance(self._graph, dict) and key not in self._graph:
             try:
                 self._graph[key] = self.graph_factory(request)
@@ -136,6 +144,81 @@ class LangGraphAgentRunner:
         return ""
 
     @staticmethod
+    def _history_messages_for_graph(history: tuple[ChatHistoryMessage, ...]) -> list[dict]:
+        """Build LangGraph replay history, including persisted AI tool-call pairs."""
+        messages: list[dict] = []
+        for index, item in enumerate(history):
+            if item.role not in {"user", "assistant", "tool"}:
+                continue
+            metadata = item.metadata or {}
+            if not item.content.strip() and not metadata.get("tool_calls"):
+                continue
+            if item.role == "assistant":
+                message = {"role": "assistant", "content": item.content}
+                tool_calls = metadata.get("tool_calls")
+                if isinstance(tool_calls, list) and tool_calls:
+                    message["tool_calls"] = tool_calls
+                messages.append(message)
+                continue
+            if item.role == "tool":
+                tool_call_id = metadata.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    digest = sha1(item.content.encode("utf-8")).hexdigest()[:12]
+                    tool_call_id = f"history-{index}-{digest}"
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": tool_call_id,
+                                    "name": metadata.get("tool_name") or "historical_tool",
+                                    "args": {},
+                                    "type": "tool_call",
+                                }
+                            ],
+                        }
+                    )
+                tool_message = {
+                    "role": "tool",
+                    "content": item.content,
+                    "tool_call_id": tool_call_id,
+                }
+                tool_name = metadata.get("tool_name")
+                if isinstance(tool_name, str) and tool_name:
+                    tool_message["name"] = tool_name
+                messages.append(tool_message)
+                continue
+            messages.append({"role": item.role, "content": item.content})
+        return messages
+
+    @staticmethod
+    def _message_metadata(message: object) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                metadata["tool_calls"] = tool_calls
+            tool_call_id = message.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                metadata["tool_call_id"] = tool_call_id
+            tool_name = message.get("name") or message.get("tool_name")
+            if isinstance(tool_name, str) and tool_name:
+                metadata["tool_name"] = tool_name
+            return metadata
+
+        tool_calls = getattr(message, "tool_calls", None)
+        if isinstance(tool_calls, list) and tool_calls:
+            metadata["tool_calls"] = tool_calls
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if isinstance(tool_call_id, str) and tool_call_id:
+            metadata["tool_call_id"] = tool_call_id
+        tool_name = getattr(message, "name", None) or getattr(message, "tool_name", None)
+        if isinstance(tool_name, str) and tool_name:
+            metadata["tool_name"] = tool_name
+        return metadata
+
+    @staticmethod
     def _extract_messages_to_store(messages: object) -> tuple[ChatHistoryMessage, ...]:
         if not isinstance(messages, list):
             return ()
@@ -147,13 +230,38 @@ class LangGraphAgentRunner:
 
         current_turn = messages[last_user_index + 1 :] if last_user_index >= 0 else messages
         stored: list[ChatHistoryMessage] = []
+        pending_ai_by_id: dict[str, ChatHistoryMessage] = {}
+        stored_ai_ids: set[str] = set()
+
         for message in current_turn:
             role = LangGraphAgentRunner._message_role(message)
+            metadata = LangGraphAgentRunner._message_metadata(message)
+            if role in {"assistant", "ai"} and metadata.get("tool_calls"):
+                ai_message = ChatHistoryMessage(
+                    role="assistant",
+                    content=LangGraphAgentRunner._message_content(message),
+                    metadata=metadata,
+                )
+                for tool_call in metadata["tool_calls"]:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = tool_call.get("id")
+                    if isinstance(tool_call_id, str) and tool_call_id:
+                        pending_ai_by_id[tool_call_id] = ai_message
+                continue
+
             if role != "tool":
                 continue
+
             content = LangGraphAgentRunner._message_content(message)
-            if content:
-                stored.append(ChatHistoryMessage(role="tool", content=content))
+            if not content:
+                continue
+            tool_call_id = metadata.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id in pending_ai_by_id and tool_call_id not in stored_ai_ids:
+                stored.append(pending_ai_by_id[tool_call_id])
+                stored_ai_ids.add(tool_call_id)
+            stored.append(ChatHistoryMessage(role="tool", content=content, metadata=metadata or None))
+
         return tuple(stored)
 
     @staticmethod

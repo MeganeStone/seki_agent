@@ -91,8 +91,8 @@ def create_code_langchain_tools(
             func=_delete_path_func(file_tool, owner_username, conversation_id, agent_name, operation_service),
             name="code_delete_path",
             description=(
-                "删除 code agent 本次运行创建的文件或目录。"
-                "非 code agent 本次运行创建的既有文件不会直接删除，会返回 requires_confirmation。"
+                "删除当前用户 workspace 内的文件或目录。"
+                "项目根目录和 skills 目录只读，不能删除。"
                 "删除目录必须显式 recursive=true。"
                 "参数：path 路径，recursive 是否递归删除目录。"
             ),

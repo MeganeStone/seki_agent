@@ -88,7 +88,7 @@ def by_name_descriptions(tools) -> str:
     return "\n".join(tool.description for tool in tools)
 
 
-def test_code_tool_creates_pending_operation_when_deleting_existing_file(tmp_path: Path) -> None:
+def test_code_tool_deletes_existing_workspace_file_without_pending_operation(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     (root / "existing.txt").write_text("keep", encoding="utf-8")
@@ -109,11 +109,9 @@ def test_code_tool_creates_pending_operation_when_deleting_existing_file(tmp_pat
         result = by_name["code_delete_path"].invoke({"path": "existing.txt", "recursive": False})
 
         operations = operation_service.list_operations("alice", conversation_id="conv-1", operation_status="pending")
-        assert "status=requires_confirmation" in result
-        assert f"pending_operation_id={operations[0].operation_id}" in result
-        assert operations[0].operation_type == "delete_path"
-        assert operations[0].payload["path"] == "existing.txt"
-        assert (root / "existing.txt").exists()
+        assert "status=succeeded" in result
+        assert operations == []
+        assert not (root / "existing.txt").exists()
     finally:
         conn.close()
 

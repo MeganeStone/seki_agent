@@ -4,12 +4,14 @@ import { createSpiTask, getSpiTask } from '../api/spi'
 import TaskResultPanel from '../components/TaskResultPanel'
 import type { WorkspaceFile } from '../types/files'
 import type { SpiTask } from '../types/spi'
+import { scopedStorageKey } from '../utils/storageScope'
 
 type SpiPageProps = {
   accessToken: string | null
+  username: string | null
 }
 
-const LAST_TASK_STORAGE_KEY = 'seki_last_spi_task'
+const LAST_TASK_BASE_KEY = 'seki_last_spi_task'
 
 function isLogFile(file: WorkspaceFile): boolean {
   return file.filename.toLowerCase().endsWith('.log')
@@ -21,10 +23,10 @@ function formatDate(value: string): string {
   return date.toLocaleString()
 }
 
-function readCachedTask(): SpiTask | null {
+function readCachedTask(storageKey: string): SpiTask | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
     return JSON.parse(raw) as SpiTask
   } catch {
@@ -32,23 +34,24 @@ function readCachedTask(): SpiTask | null {
   }
 }
 
-function persistTask(task: SpiTask | null): void {
+function persistTask(storageKey: string, task: SpiTask | null): void {
   if (typeof window === 'undefined') return
   try {
     if (task) {
-      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+      window.localStorage.setItem(storageKey, JSON.stringify(task))
     } else {
-      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
     }
   } catch {
     // ignore storage errors
   }
 }
 
-function SpiPage({ accessToken }: SpiPageProps) {
+function SpiPage({ accessToken, username }: SpiPageProps) {
+  const taskStorageKey = scopedStorageKey(LAST_TASK_BASE_KEY, username)
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([])
-  const [task, setTask] = useState<SpiTask | null>(() => readCachedTask())
+  const [task, setTask] = useState<SpiTask | null>(null)
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -83,7 +86,10 @@ function SpiPage({ accessToken }: SpiPageProps) {
 
     let isCurrent = true
     const token = accessToken
-    const cachedTask = readCachedTask()
+    const cachedTask = readCachedTask(taskStorageKey)
+    queueMicrotask(() => {
+      if (isCurrent) setTask(cachedTask)
+    })
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -109,10 +115,10 @@ function SpiPage({ accessToken }: SpiPageProps) {
           const latestTask = await getSpiTask(token, cachedTask.task_id)
           if (!isCurrent) return
           setTask(latestTask)
-          persistTask(latestTask)
+          persistTask(taskStorageKey, latestTask)
         } catch {
           if (isCurrent) {
-            persistTask(null)
+            persistTask(taskStorageKey, null)
           }
         }
       })()
@@ -121,7 +127,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
     return () => {
       isCurrent = false
     }
-  }, [accessToken])
+  }, [accessToken, taskStorageKey])
 
   async function handleCreateTask() {
     if (!accessToken || selectedFileIds.length === 0) return
@@ -131,7 +137,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
     try {
       const created = await createSpiTask(accessToken, { file_ids: selectedFileIds })
       setTask(created)
-      persistTask(created)
+      persistTask(taskStorageKey, created)
     } catch (error) {
       setError(error instanceof Error ? error.message : 'SPI 解析任务创建失败')
     } finally {
@@ -147,7 +153,7 @@ function SpiPage({ accessToken }: SpiPageProps) {
     try {
       const refreshed = await getSpiTask(accessToken, task.task_id)
       setTask(refreshed)
-      persistTask(refreshed)
+      persistTask(taskStorageKey, refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : 'SPI 解析任务查询失败')
     } finally {

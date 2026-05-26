@@ -125,15 +125,35 @@ def test_delete_agent_created_file_without_confirmation(tmp_path: Path) -> None:
     assert svc.audit_records[-1].tool_name == "delete_path"
 
 
-def test_delete_existing_file_requires_confirmation(tmp_path: Path) -> None:
+def test_delete_existing_workspace_file_without_confirmation(tmp_path: Path) -> None:
     svc = service(tmp_path)
     existing = tmp_path / "project" / "existing.txt"
     existing.write_text("keep", encoding="utf-8")
 
     result = svc.delete_path("existing.txt")
 
-    assert result.status == "requires_confirmation"
-    assert result.message == "该路径不是 code agent 本次运行创建的内容，删除前需要用户确认。"
+    assert result.status == "succeeded"
+    assert result.message == "文件删除成功。"
+    assert not existing.exists()
+
+
+def test_delete_rejects_read_only_allowed_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    workspace_root = tmp_path / "workspace" / "alice"
+    project_root.mkdir()
+    workspace_root.mkdir(parents=True)
+    existing = project_root / "existing.txt"
+    existing.write_text("keep", encoding="utf-8")
+    svc = CodeExecutionService(
+        allowed_roots=[workspace_root, project_root],
+        default_root=workspace_root,
+        writable_roots=[workspace_root],
+    )
+
+    result = svc.delete_path(str(existing))
+
+    assert result.status == "rejected"
+    assert result.message == "该路径不在 code agent 的可写工作目录内。"
     assert existing.exists()
 
 

@@ -229,30 +229,15 @@ class CodeExecutionService:
     ) -> CodeExecutionResult:
         """删除文件或目录。
 
-        为降低误删风险，只有 code agent 本轮新建的路径可直接删除；既有路径会
-        返回 requires_confirmation，由前端展示确认卡片后再执行。
+        code agent 的写入根默认是当前用户 workspace；该目录内的普通文件和目录
+        可直接删除，目录仍需要显式 recursive=true。项目根和 skills 等只读根不允许删除。
         """
         started_at = self._now()
         target = ""
         try:
             resolved = self._resolve_existing_path(path)
+            self._ensure_writable(resolved)
             target = self._display_path(resolved)
-            if not confirmed and not self._is_agent_created_path(resolved):
-                return self._record_result(
-                    "delete_path",
-                    "requires_confirmation",
-                    target,
-                    "该路径不是 code agent 本次运行创建的内容，删除前需要用户确认。",
-                    started_at,
-                    owner_username,
-                    conversation_id,
-                    agent_name,
-                    data={
-                        "path": path,
-                        "recursive": recursive,
-                        "requires_confirmation": True,
-                    },
-                )
 
             if resolved.is_dir():
                 if not recursive:

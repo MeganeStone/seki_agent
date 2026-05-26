@@ -112,6 +112,62 @@ def test_agent_service_records_tool_messages_from_runner(test_db: sqlite3.Connec
         ("assistant", "工具已执行。"),
     ]
 
+def test_agent_service_records_ai_tool_call_message_but_hides_it_from_chat_history(
+    test_db: sqlite3.Connection,
+) -> None:
+    class ToolCallRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer="done",
+                route="code_agent",
+                data={"active_agent": "code_agent"},
+                messages_to_store=(
+                    ChatHistoryMessage(
+                        role="assistant",
+                        content="",
+                        metadata={
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "name": "code_list_dir",
+                                    "args": {"path": "."},
+                                    "type": "tool_call",
+                                }
+                            ]
+                        },
+                    ),
+                    ChatHistoryMessage(
+                        role="tool",
+                        content="ok",
+                        metadata={"tool_call_id": "call-1", "tool_name": "code_list_dir"},
+                    ),
+                ),
+            )
+
+    service = AgentService(test_db, runner=ToolCallRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "list")
+
+    rows = test_db.execute(
+        """
+        SELECT role, content, metadata
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at
+        """,
+        (conversation.conversation_id,),
+    ).fetchall()
+    assert [row["role"] for row in rows] == ["user", "assistant", "tool", "assistant"]
+    assert '"tool_calls"' in rows[1]["metadata"]
+    assert '"tool_call_id":"call-1"' in rows[2]["metadata"]
+
+    visible = service.list_messages("alice", conversation.conversation_id)
+    assert [(item.role, item.content) for item in visible] == [
+        ("user", "list"),
+        ("assistant", "done"),
+    ]
+
 
 def test_agent_service_starts_next_turn_from_previous_active_agent(test_db: sqlite3.Connection) -> None:
     class SwitchingRunner:
@@ -160,16 +216,15 @@ def test_agent_service_can_inject_runner_boundary(test_db: sqlite3.Connection) -
     assert response.answer == "runner answer: hello"
     assert response.route == "test-route"
     assert response.data == {"task_id": "runner-task", "status": "succeeded"}
-    assert runner.requests == [
-        AgentRequest(
-            owner_username="alice",
-            conversation_id=conversation.conversation_id,
-            message="hello",
-            use_knowledge_base=False,
-            agent_name="main_agent",
-            api_key=None,
-        )
-    ]
+    assert runner.requests[0] == AgentRequest(
+        owner_username="alice",
+        conversation_id=conversation.conversation_id,
+        message="hello",
+        use_knowledge_base=False,
+        agent_name="main_agent",
+        api_key=None,
+        agent_histories={"main_agent": (), "code_agent": ()},
+    )
 
 
 def test_agent_service_passes_request_api_key_to_runner(test_db: sqlite3.Connection) -> None:
@@ -227,6 +282,205 @@ def test_agent_service_passes_recent_conversation_history_to_runner(test_db: sql
     assert [item.content for item in runner.requests[1].history] == [
         "第一句",
         "runner answer: 第一句",
+    ]
+
+
+def test_agent_service_isolates_history_by_active_agent(test_db: sqlite3.Connection) -> None:
+    class RecordingRunner:
+        def __init__(self) -> None:
+            self.requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResponse:
+            self.requests.append(request)
+            if request.agent_name == "main_agent":
+                return AgentResponse(
+                    answer="handoff",
+                    route="main_agent",
+                    data={"active_agent": "code_agent"},
+                )
+            return AgentResponse(
+                answer="code answer",
+                route="code_agent",
+                data={"active_agent": "code_agent"},
+            )
+
+    runner = RecordingRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "请写代码")
+    service.ask("alice", conversation.conversation_id, "继续写")
+
+    assert runner.requests[1].agent_name == "code_agent"
+    assert runner.requests[1].history == ()
+    assert runner.requests[1].agent_histories == {
+        "main_agent": (
+            ChatHistoryMessage(role="user", content="请写代码"),
+            ChatHistoryMessage(role="assistant", content="handoff"),
+        ),
+        "code_agent": (),
+    }
+
+
+def test_agent_service_passes_separate_histories_for_main_and_code_agents(test_db: sqlite3.Connection) -> None:
+    class AlternatingRunner:
+        def __init__(self) -> None:
+            self.requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResponse:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return AgentResponse(answer="main one", route="main_agent", data={"active_agent": "code_agent"})
+            if len(self.requests) == 2:
+                return AgentResponse(answer="code one", route="code_agent", data={"active_agent": "main_agent"})
+            return AgentResponse(answer="main two", route="main_agent", data={"active_agent": "main_agent"})
+
+    runner = AlternatingRunner()
+    service = AgentService(test_db, runner=runner)
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "main question")
+    service.ask("alice", conversation.conversation_id, "code question")
+    service.ask("alice", conversation.conversation_id, "main followup")
+
+    assert runner.requests[2].agent_name == "main_agent"
+    assert runner.requests[2].history == (
+        ChatHistoryMessage(role="user", content="main question"),
+        ChatHistoryMessage(role="assistant", content="main one"),
+    )
+    assert runner.requests[2].agent_histories == {
+        "main_agent": (
+            ChatHistoryMessage(role="user", content="main question"),
+            ChatHistoryMessage(role="assistant", content="main one"),
+        ),
+        "code_agent": (
+            ChatHistoryMessage(role="user", content="code question"),
+            ChatHistoryMessage(role="assistant", content="code one"),
+        ),
+    }
+
+
+def test_agent_service_stores_handoff_turn_under_final_answering_agent_when_route_is_generic(
+    test_db: sqlite3.Connection,
+) -> None:
+    class FinalCodeRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer="code answer",
+                route="langgraph",
+                data={"active_agent": "code_agent"},
+            )
+
+    service = AgentService(test_db, runner=FinalCodeRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "帮我写代码")
+
+    rows = test_db.execute(
+        """
+        SELECT role, content, agent_name
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at
+        """,
+        (conversation.conversation_id,),
+    ).fetchall()
+    assert [(row["role"], row["content"], row["agent_name"]) for row in rows] == [
+        ("user", "帮我写代码", "code_agent"),
+        ("assistant", "code answer", "code_agent"),
+    ]
+
+
+def test_agent_service_keeps_explicit_main_handoff_decision_under_main_agent(
+    test_db: sqlite3.Connection,
+) -> None:
+    class HandoffDecisionRunner:
+        def run(self, request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                answer="handoff",
+                route="main_agent",
+                data={"active_agent": "code_agent"},
+            )
+
+    service = AgentService(test_db, runner=HandoffDecisionRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "帮我写代码")
+
+    rows = test_db.execute(
+        """
+        SELECT role, content, agent_name
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at
+        """,
+        (conversation.conversation_id,),
+    ).fetchall()
+    assert [(row["role"], row["content"], row["agent_name"]) for row in rows] == [
+        ("user", "帮我写代码", "main_agent"),
+        ("assistant", "handoff", "main_agent"),
+    ]
+
+
+def test_agent_service_includes_tool_messages_in_agent_history(test_db: sqlite3.Connection) -> None:
+    class ToolThenAnswerRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request: AgentRequest) -> AgentResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return AgentResponse(
+                    answer="已列出目录。",
+                    route="code_agent",
+                    data={"active_agent": "code_agent"},
+                    messages_to_store=(ChatHistoryMessage(role="tool", content="code_list_dir: ok"),),
+                )
+            assert request.agent_name == "code_agent"
+            assert request.history == (
+                ChatHistoryMessage(role="user", content="列目录"),
+                ChatHistoryMessage(role="tool", content="code_list_dir: ok"),
+                ChatHistoryMessage(role="assistant", content="已列出目录。"),
+            )
+            return AgentResponse(answer="继续处理。", route="code_agent", data={"active_agent": "code_agent"})
+
+    service = AgentService(test_db, runner=ToolThenAnswerRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "列目录")
+    service.ask("alice", conversation.conversation_id, "继续")
+
+
+def test_agent_service_list_messages_hides_tool_messages(test_db: sqlite3.Connection) -> None:
+    service = AgentService(test_db, runner=FakeRunner())
+    conversation = service.create_conversation("alice")
+
+    service.ask("alice", conversation.conversation_id, "hello")
+
+    rows = test_db.execute(
+        """
+        SELECT role, content
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at
+        """,
+        (conversation.conversation_id,),
+    ).fetchall()
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+
+    service.chats.add_message(
+        "tool-msg",
+        conversation.conversation_id,
+        "alice",
+        "tool",
+        "hidden tool output",
+        agent_name="code_agent",
+    )
+
+    visible = service.list_messages("alice", conversation.conversation_id)
+    assert [(item.role, item.content) for item in visible] == [
+        ("user", "hello"),
+        ("assistant", "runner answer: hello"),
     ]
 
 

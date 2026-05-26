@@ -404,3 +404,129 @@ npm run build
 ```
 
 结果：后端 86 passed、1 skipped；前端 build 通过。
+
+## 本轮体验修复（上下文隔离 / 用户隔离 / 文件同步 / 工具消息隐藏）
+
+- **主 Agent 与 code agent 上下文隔离**：`chat_messages` 新增 `agent_name` 字段；`AgentService` 按 `active_agent` 过滤历史，user/assistant/tool 均按实际处理 agent 打标；`LangGraphAgentRunner` 会把 tool 历史传给 graph。
+- **切换账号后任务缓存隔离**：Diff/Translation/SPI/Chat 页面的 localStorage key 改为 `baseKey:username`；登录时持久化 `seki_username`。
+- **文件管理同步 workspace**：`FileService.list_files` 会先扫描 `data/workspace/{username}` 并补录未登记文件，code agent 写入的文件也会显示。
+- **前端不展示 tool 消息**：Chat 历史 API 排除 `role=tool`；前端加载历史时也过滤 tool 消息。
+
+验证：
+
+```powershell
+$env:TMPDIR="d:\seki\AI\Langchain\seki_agent\backend\.tmp"; $env:TEMP=$env:TMPDIR; $env:TMP=$env:TMPDIR
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_service.py backend\tests\test_files.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_chat.py -q -p no:cacheprovider
+cd frontend
+npm run build
+```
+
+结果：后端 39 passed、1 skipped；前端 build 通过。
+
+## 第二轮对话 KeyError: tool_call_id 修复
+
+- 根因：上一轮落库的 tool 历史在第二轮 replay 给 LangGraph 时只有 `role/content`，缺少 LangChain `ToolMessage` 必需的 `tool_call_id`。
+- 修复：`LangGraphAgentRunner._history_messages_for_graph` 为 replay 的 tool 消息补稳定 synthetic `tool_call_id`。
+
+## 本轮上下文隔离与工具调用消息修复
+
+用户实测仍发现两个问题：Agent 上下文未真正隔离、缺失触发工具调用的 AI 消息。
+
+- 根因：上一轮只落库了 `tool` 结果消息，没有持久化 LangChain/LangGraph 在工具调用前生成的 assistant/AI `tool_calls` 消息；下一轮 replay 时即使有 `tool_call_id`，也缺少合法的上游 AI 工具调用消息，容易导致上下文链路断裂或被 LangGraph 拒绝。
+- `chat_messages` 新增 `metadata` JSON 字段，并兼容旧库自动 `ALTER TABLE`；用于保存 assistant tool-call 的 `tool_calls`，以及 tool 结果的 `tool_call_id` / `tool_name`。
+- `ChatHistoryMessage` 新增 `metadata`；`AgentService` 读取历史时带上 metadata，保存 runner 返回的内部 assistant/tool 消息，但 Chat 历史 API 仍隐藏 tool 消息和带 `tool_calls` 的内部 assistant 消息，前端不会打印工具调用细节。
+- `LangGraphAgentRunner._extract_messages_to_store` 会从本轮 LangGraph messages 中提取“assistant tool_calls -> tool result”配对并落库，避免只保存 tool 结果。
+- `LangGraphAgentRunner._history_messages_for_graph` 会按原始配对 replay；对历史旧数据中只有 tool 结果的消息，仍补 synthetic assistant tool-call + synthetic `tool_call_id`，保证既有会话可继续。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_service.py -q
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_chat.py backend\tests\test_files.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_service.py -q
+cd frontend
+npm run build
+```
+
+结果：后端核心 30 passed、1 skipped；相关回归 43 passed、1 skipped；前端 build 通过。
+
+## 本轮 LangSmith 观测到的 handoff 上下文隔离修复与退出登录
+
+用户在 LangSmith 上观察到：code agent 切回 main agent 后，传给 main agent 的上下文仍带有 code agent 对话消息。
+
+- 根因：上一轮数据库历史已经按 `agent_name` 隔离，但 LangGraph 父图 handoff 时会把当前 `state.messages` 原样交给目标子图；因此同一次 code -> main 交接中，main agent 的 LangSmith span 仍会看到 code agent 的消息。
+- 修复：`multi_agent_graph_factory` 在处理 `Command(goto=...)` handoff 时清洗父图 state；跨 agent 交接只保留本轮最后一条用户消息，并设置目标 `active_agent/agent_name`，不再把来源 agent 的 assistant/tool 历史传入目标 agent 子图。
+- 新增测试覆盖 main -> code 与 code -> main 两个方向的 handoff state 清洗，确保目标 agent 收到的 `messages` 只包含当前用户请求。
+- 前端侧边栏新增账号区域：显示当前用户名，登录后可点击“退出登录”；退出时清除 `seki_access_token` 和 `seki_username` 并跳回登录页。各账号 scoped 的历史缓存不清除，后续同账号登录仍可恢复自己的最近任务/会话。
+- 为满足当前 React lint 规则，Chat/Translation/SPI/Diff 页面读取 scoped localStorage 后的同步状态恢复改为 microtask 内更新，语义保持不变。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_multi_agent_graph_factory.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_service.py -q
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：后端 37 passed、1 skipped；前端 lint/build 通过。
+
+## 本轮 Agent 线程归并、handoff 清洗、web_search 和删除权限调整
+
+用户继续反馈：
+1. main agent 切到 code agent 时，code agent 的 LangSmith span 仍能看到 main agent 对话消息。
+2. 同一个 conversation 连续 5 次对话在 LangSmith 上被分成 main/code 两条 thread。
+3. 需要开放 web_search，火山引擎 API key 已在 `.env` 配置。
+4. code agent 需要自由删除 `workspace/{user}` 下所有文件，而不仅限本轮创建内容。
+
+- 根因 1：只在 handoff command update 里清洗 `messages` 还不够；LangGraph 子图调用时可能仍从父图 state/checkpoint 合并出旧消息。现在 `multi_agent_graph_factory` 在每次真正调用 main/code 子图前都会执行 `_state_for_agent(...)`，目标 agent 只收到当前最后一条用户消息，并设置目标 `active_agent/agent_name`。
+- 根因 2：`LangGraphAgentRunner` 的 graph cache key 和 LangGraph `thread_id` 原先包含 `agent_name`，因此同一 conversation 会按 main/code 拆成两个 LangSmith thread。现在统一改为 `owner_username:conversation_id`，同一 conversation 归入同一 thread；agent 隔离由父图 state 清洗和数据库 `agent_name` 历史过滤保证。
+- `web_search` 已按后端 `.env` 的 `SEKI_WEB_SEARCH_API_KEY` 启用火山/Feedcoop provider；没有 key 时才降级为 disabled。新增工厂测试锁定该行为。实际使用前需确认运行后端进程能读取到该 `.env`，配置名为 `SEKI_WEB_SEARCH_API_KEY`。
+- `CodeExecutionService.delete_path` 现在允许直接删除当前用户 workspace 可写根下的既有文件/目录；目录仍必须显式 `recursive=true`。项目根和 shared skills 仍只读，不允许删除。code agent prompt 和 tool description 已同步。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_multi_agent_graph_factory.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_code_execution_service.py backend\tests\test_code_langchain_tool_adapter.py backend\tests\test_agent_runner_factory.py backend\tests\test_web_search_service.py backend\tests\test_agent_tools.py -q
+cd frontend
+npm run build
+```
+
+结果：后端 88 passed、1 skipped；前端 build 通过。
+
+## 本轮 Agent 独立历史保留修复
+
+用户继续反馈：两个 agent 的上下文确实隔离了，但每次调用目标 agent 时只剩当前最后一句 human message，目标 agent 自己的历史也被清空。
+
+- 根因：上一轮父图 state 清洗过度，只保留 `_handoff_messages(...)` 的最后一条用户消息；虽然避免了跨 agent 污染，但也丢掉了目标 agent 自己的历史。
+- 修复：`AgentRequest` 新增 `agent_histories`，`AgentService` 每轮同时读取 `main_agent` 与 `code_agent` 两套持久化历史；`history` 仍保留为当前 active agent 的兼容字段。
+- `LangGraphAgentRunner` 会把两套历史分别转成 `main_agent_messages` 与 `code_agent_messages` 放入父图 state。
+- `multi_agent_graph_factory._state_for_agent(...)` 现在按目标 agent 选择它自己的历史，再追加当前最后一条 human message；main/code 之间不互相污染，但各自历史会保留。
+- 修正本轮消息归属：`AgentService._response_agent_name(...)` 现在优先用 `result.route` 作为“本轮实际回答者”，`data.active_agent` 只表示下一轮入口，避免 main 的 handoff 回复被错误存进 code 历史。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_multi_agent_graph_factory.py backend\tests\test_langgraph_agent_runner.py backend\tests\test_agent_service.py backend\tests\test_code_execution_service.py backend\tests\test_code_langchain_tool_adapter.py backend\tests\test_agent_runner_factory.py backend\tests\test_web_search_service.py backend\tests\test_agent_tools.py -q
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：后端 89 passed、1 skipped；前端 lint/build 通过。
+
+## 本轮切换 agent 后消息归属修正
+
+用户反馈：如果一次对话中发生 agent 切换，这次对话应归属于最终实际回答的助手，而不是切换前助手。
+
+- 修复：`AgentService._response_agent_name(...)` 的归属规则调整为：如果 `result.route` 明确是 `main_agent` 或 `code_agent`，按 route 归属；否则使用 `data.agent_name` / `data.active_agent` 判断最终回答 agent。
+- 这样真实 LangGraph 返回 `route=langgraph` 且最终 `active_agent=code_agent` 时，本轮 user/assistant 消息会归到 `code_agent` 历史；显式 `route=main_agent` 的纯 handoff 决策仍归 main，避免误写入 code 历史。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_agent_service.py backend\tests\test_multi_agent_graph_factory.py backend\tests\test_langgraph_agent_runner.py -q
+cd frontend
+npm run build
+```
+
+结果：后端 41 passed、1 skipped；前端 build 通过。

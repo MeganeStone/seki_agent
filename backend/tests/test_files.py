@@ -103,3 +103,24 @@ def test_files_require_authentication(client: TestClient) -> None:
     response = client.get("/api/v1/files")
 
     assert response.status_code == 401
+
+
+def test_list_files_includes_code_agent_created_workspace_files(
+    client: TestClient,
+    test_db: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    headers = auth_headers(client, test_db, "alice")
+    workspace_dir = tmp_path / "workspace"
+    owner_dir = workspace_dir / "alice"
+    scripts_dir = owner_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    created = scripts_dir / "task.py"
+    created.write_text("print('ok')\n", encoding="utf-8")
+
+    response = client.get("/api/v1/files", headers=headers)
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert any(item["filename"] == "scripts/task.py" for item in items)
+    assert any(item["size"] == created.stat().st_size for item in items)

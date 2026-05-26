@@ -4,12 +4,14 @@ import { downloadFile, listFiles } from '../api/files'
 import TaskResultPanel from '../components/TaskResultPanel'
 import type { DiffTask } from '../types/diff'
 import type { WorkspaceFile } from '../types/files'
+import { scopedStorageKey } from '../utils/storageScope'
 
 type DiffPageProps = {
   accessToken: string | null
+  username: string | null
 }
 
-const LAST_TASK_STORAGE_KEY = 'seki_last_diff_task'
+const LAST_TASK_BASE_KEY = 'seki_last_diff_task'
 
 function isArchive(file: WorkspaceFile): boolean {
   return file.filename.toLowerCase().endsWith('.tar.gz')
@@ -21,10 +23,10 @@ function formatDate(value: string): string {
   return date.toLocaleString()
 }
 
-function readCachedTask(): DiffTask | null {
+function readCachedTask(storageKey: string): DiffTask | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(LAST_TASK_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
     return JSON.parse(raw) as DiffTask
   } catch {
@@ -32,24 +34,25 @@ function readCachedTask(): DiffTask | null {
   }
 }
 
-function persistTask(task: DiffTask | null): void {
+function persistTask(storageKey: string, task: DiffTask | null): void {
   if (typeof window === 'undefined') return
   try {
     if (task) {
-      window.localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify(task))
+      window.localStorage.setItem(storageKey, JSON.stringify(task))
     } else {
-      window.localStorage.removeItem(LAST_TASK_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
     }
   } catch {
     // ignore storage errors
   }
 }
 
-function DiffPage({ accessToken }: DiffPageProps) {
+function DiffPage({ accessToken, username }: DiffPageProps) {
+  const taskStorageKey = scopedStorageKey(LAST_TASK_BASE_KEY, username)
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [leftFileId, setLeftFileId] = useState('')
   const [rightFileId, setRightFileId] = useState('')
-  const [task, setTask] = useState<DiffTask | null>(() => readCachedTask())
+  const [task, setTask] = useState<DiffTask | null>(null)
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refreshingTask, setRefreshingTask] = useState(false)
@@ -85,7 +88,10 @@ function DiffPage({ accessToken }: DiffPageProps) {
 
     let isCurrent = true
     const token = accessToken
-    const cachedTask = readCachedTask()
+    const cachedTask = readCachedTask(taskStorageKey)
+    queueMicrotask(() => {
+      if (isCurrent) setTask(cachedTask)
+    })
 
     async function loadFiles() {
       setLoadingFiles(true)
@@ -112,10 +118,10 @@ function DiffPage({ accessToken }: DiffPageProps) {
           const latestTask = await getDiffTask(token, cachedTask.task_id)
           if (!isCurrent) return
           setTask(latestTask)
-          persistTask(latestTask)
+          persistTask(taskStorageKey, latestTask)
         } catch {
           if (isCurrent) {
-            persistTask(null)
+            persistTask(taskStorageKey, null)
           }
         }
       })()
@@ -124,7 +130,7 @@ function DiffPage({ accessToken }: DiffPageProps) {
     return () => {
       isCurrent = false
     }
-  }, [accessToken])
+  }, [accessToken, taskStorageKey])
 
   async function handleCreateTask() {
     if (!accessToken || !canCreateTask) return
@@ -137,7 +143,7 @@ function DiffPage({ accessToken }: DiffPageProps) {
         right_file_id: rightFileId,
       })
       setTask(created)
-      persistTask(created)
+      persistTask(taskStorageKey, created)
     } catch (error) {
       setError(error instanceof Error ? error.message : '版本差分任务创建失败')
     } finally {
@@ -153,7 +159,7 @@ function DiffPage({ accessToken }: DiffPageProps) {
     try {
       const refreshed = await getDiffTask(accessToken, task.task_id)
       setTask(refreshed)
-      persistTask(refreshed)
+      persistTask(taskStorageKey, refreshed)
     } catch (error) {
       setError(error instanceof Error ? error.message : '版本差分任务查询失败')
     } finally {

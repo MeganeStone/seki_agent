@@ -9,6 +9,7 @@ import SpiPage from './pages/SpiPage'
 import TasksPage from './pages/TasksPage'
 import TranslationPage from './pages/TranslationPage'
 import type { User } from './types/auth'
+import { clearStoredUsername, persistUsername, readStoredUsername } from './utils/storageScope'
 
 type HealthState = 'checking' | 'ok' | 'error'
 
@@ -61,7 +62,10 @@ const routes = [
 function App() {
   // accessToken 放在 localStorage，刷新页面后仍能继续访问需要登录的功能。
   const [health, setHealth] = useState<HealthState>('checking')
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<User | null>(() => {
+    const username = readStoredUsername()
+    return username ? { id: username, username } : null
+  })
   const [accessToken, setAccessToken] = useState(() => window.localStorage.getItem('seki_access_token'))
   const [currentPath, setCurrentPath] = useState(() => window.location.hash.replace('#/', '') || 'login')
 
@@ -90,8 +94,18 @@ function App() {
 
   function handleLogin(user: User, accessToken: string) {
     window.localStorage.setItem('seki_access_token', accessToken)
+    persistUsername(user.username)
     setAccessToken(accessToken)
     setUser(user)
+    window.location.hash = '#/chat'
+  }
+
+  function handleLogout() {
+    window.localStorage.removeItem('seki_access_token')
+    clearStoredUsername()
+    setAccessToken(null)
+    setUser(null)
+    window.location.hash = '#/login'
   }
 
   function renderPage() {
@@ -105,19 +119,19 @@ function App() {
     }
 
     if (activeRoute.path === 'chat') {
-      return <ChatPage accessToken={accessToken} />
+      return <ChatPage accessToken={accessToken} username={user?.username ?? null} />
     }
 
     if (activeRoute.path === 'translation') {
-      return <TranslationPage accessToken={accessToken} />
+      return <TranslationPage accessToken={accessToken} username={user?.username ?? null} />
     }
 
     if (activeRoute.path === 'spi') {
-      return <SpiPage accessToken={accessToken} />
+      return <SpiPage accessToken={accessToken} username={user?.username ?? null} />
     }
 
     if (activeRoute.path === 'diff') {
-      return <DiffPage accessToken={accessToken} />
+      return <DiffPage accessToken={accessToken} username={user?.username ?? null} />
     }
 
     if (activeRoute.path === 'tasks') {
@@ -149,6 +163,17 @@ function App() {
             </a>
           ))}
         </nav>
+
+        <div className="account-panel">
+          <span>{user ? user.username : '未登录'}</span>
+          {user ? (
+            <button type="button" onClick={handleLogout}>
+              退出登录
+            </button>
+          ) : (
+            <a href="#/login">登录</a>
+          )}
+        </div>
       </aside>
 
       <section className="workspace">

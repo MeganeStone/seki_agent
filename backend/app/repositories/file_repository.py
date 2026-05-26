@@ -62,6 +62,17 @@ class FileRepository:
         )
         return cursor.fetchone()
 
+    def get_by_storage_path(self, owner_username: str, storage_path: str) -> sqlite3.Row | None:
+        cursor = self.conn.execute(
+            """
+            SELECT id, owner_username, filename, storage_path, size, created_at
+            FROM files
+            WHERE owner_username = ? AND storage_path = ?
+            """,
+            (owner_username, storage_path),
+        )
+        return cursor.fetchone()
+
     def delete_for_owner(self, file_id: str, owner_username: str) -> sqlite3.Row | None:
         row = self.get_for_owner(file_id, owner_username)
         if row is None:

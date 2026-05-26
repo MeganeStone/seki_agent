@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass, replace
+from typing import Any
 from typing import Protocol
 
 from app.core.api_keys import temporary_env_api_key
@@ -18,6 +19,7 @@ from app.services.agent_tools import (
 class ChatHistoryMessage:
     role: str
     content: str
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class AgentRequest:
     api_key: str | None = None
     web_search_api_key: str | None = None
     history: tuple[ChatHistoryMessage, ...] = ()
+    agent_histories: dict[str, tuple[ChatHistoryMessage, ...]] | None = None
 
 
 @dataclass(frozen=True)

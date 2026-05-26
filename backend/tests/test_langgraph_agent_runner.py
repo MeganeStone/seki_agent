@@ -1,8 +1,9 @@
 import pytest
 import importlib.util
 import os
+from hashlib import sha1
 
-from app.services.agent_runner import AgentRequest
+from app.services.agent_runner import AgentRequest, ChatHistoryMessage
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.langgraph_agent_runner import (
     LangGraphAgentRunner,
@@ -67,13 +68,85 @@ def test_langgraph_runner_invokes_injected_graph_factory() -> None:
     assert graph.payloads[0]["messages"] == [{"role": "user", "content": "hello"}]
     assert graph.configs[0] == {
         "configurable": {
-            "thread_id": "alice:conv-1:main_agent",
+            "thread_id": "alice:conv-1",
             "checkpoint_ns": "seki-agent",
         }
     }
 
 
-def test_langgraph_runner_uses_agent_name_for_context_isolation() -> None:
+def test_history_messages_for_graph_adds_tool_call_id_for_tool_messages() -> None:
+    messages = LangGraphAgentRunner._history_messages_for_graph(
+        (
+            ChatHistoryMessage(role="user", content="hello"),
+            ChatHistoryMessage(role="tool", content="tool output"),
+        )
+    )
+
+    assert messages == [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"history-1-{sha1(b'tool output').hexdigest()[:12]}",
+                    "name": "historical_tool",
+                    "args": {},
+                    "type": "tool_call",
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "tool output",
+            "tool_call_id": f"history-1-{sha1(b'tool output').hexdigest()[:12]}",
+        },
+    ]
+
+
+def test_langgraph_runner_forwards_tool_history_to_graph() -> None:
+    graph = FakeGraph()
+    runner = LangGraphAgentRunner(graph_factory=lambda: graph)
+
+    runner.run(
+        AgentRequest(
+            owner_username="alice",
+            conversation_id="conv-1",
+            message="continue",
+            agent_name="code_agent",
+            history=(
+                ChatHistoryMessage(role="user", content="list files"),
+                ChatHistoryMessage(role="tool", content="code_list_dir: ok"),
+                ChatHistoryMessage(role="assistant", content="done"),
+            ),
+        )
+    )
+
+    assert graph.payloads[0]["messages"] == [
+        {"role": "user", "content": "list files"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"history-1-{sha1(b'code_list_dir: ok').hexdigest()[:12]}",
+                    "name": "historical_tool",
+                    "args": {},
+                    "type": "tool_call",
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "code_list_dir: ok",
+            "tool_call_id": f"history-1-{sha1(b'code_list_dir: ok').hexdigest()[:12]}",
+        },
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_langgraph_runner_uses_conversation_thread_and_agent_payload() -> None:
     graph = FakeGraph()
     runner = LangGraphAgentRunner(graph_factory=lambda: graph)
 
@@ -86,7 +159,7 @@ def test_langgraph_runner_uses_agent_name_for_context_isolation() -> None:
         )
     )
 
-    assert graph.configs[0]["configurable"]["thread_id"] == "alice:conv-1:code_agent"
+    assert graph.configs[0]["configurable"]["thread_id"] == "alice:conv-1"
     assert graph.payloads[0]["agent_name"] == "code_agent"
 
 
@@ -184,6 +257,91 @@ def test_langgraph_runner_extracts_current_turn_tool_messages() -> None:
 
     assert response.answer == "new answer"
     assert [(item.role, item.content) for item in response.messages_to_store] == [("tool", "new tool")]
+
+
+def test_langgraph_runner_stores_ai_tool_call_before_tool_result() -> None:
+    response = LangGraphAgentRunner._to_response(
+        {
+            "messages": [
+                {"role": "user", "content": "new"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "name": "code_list_dir",
+                            "args": {"path": "."},
+                            "type": "tool_call",
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "ok", "tool_call_id": "call-1", "name": "code_list_dir"},
+                {"role": "assistant", "content": "done"},
+            ],
+        }
+    )
+
+    assert [(item.role, item.content) for item in response.messages_to_store] == [
+        ("assistant", ""),
+        ("tool", "ok"),
+    ]
+    assert response.messages_to_store[0].metadata == {
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "name": "code_list_dir",
+                "args": {"path": "."},
+                "type": "tool_call",
+            }
+        ]
+    }
+    assert response.messages_to_store[1].metadata == {
+        "tool_call_id": "call-1",
+        "tool_name": "code_list_dir",
+    }
+
+
+def test_history_messages_for_graph_replays_persisted_tool_call_pair() -> None:
+    messages = LangGraphAgentRunner._history_messages_for_graph(
+        (
+            ChatHistoryMessage(
+                role="assistant",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "name": "code_list_dir",
+                            "args": {"path": "."},
+                            "type": "tool_call",
+                        }
+                    ]
+                },
+            ),
+            ChatHistoryMessage(
+                role="tool",
+                content="ok",
+                metadata={"tool_call_id": "call-1", "tool_name": "code_list_dir"},
+            ),
+        )
+    )
+
+    assert messages == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "code_list_dir",
+                    "args": {"path": "."},
+                    "type": "tool_call",
+                }
+            ],
+        },
+        {"role": "tool", "content": "ok", "tool_call_id": "call-1", "name": "code_list_dir"},
+    ]
 
 
 def test_langgraph_runner_extracts_answer_from_message_object_content_list() -> None:

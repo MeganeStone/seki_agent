@@ -27,8 +27,17 @@ class FileService:
         self.max_upload_size_bytes = max_upload_size_bytes or settings.max_upload_size_bytes
 
     def list_files(self, owner_username: str) -> list[FileRead]:
-        self._sync_workspace_files(owner_username)
+        self.sync_workspace_files(owner_username)
         return [self._to_schema(row) for row in self.files.list_for_owner(owner_username)]
+
+    def sync_workspace_files(self, owner_username: str) -> None:
+        """让 files 表与当前用户 workspace 目录保持一致。
+
+        文件可能由 code agent 直接创建或删除，不一定经过文件管理 API。刷新文件
+        列表时需要同时补录磁盘新增文件，并清理磁盘上已经不存在的旧记录。
+        """
+        self._remove_missing_workspace_records(owner_username)
+        self._sync_workspace_files(owner_username)
 
     def get_file(self, owner_username: str, file_id: str) -> FileRead:
         row = self.files.get_for_owner(file_id, owner_username)
@@ -132,6 +141,14 @@ class FileService:
                 str(resolved),
                 resolved.stat().st_size,
             )
+
+    def _remove_missing_workspace_records(self, owner_username: str) -> None:
+        for row in self.files.list_for_owner(owner_username):
+            path = Path(row["storage_path"])
+            self._ensure_under_workspace(path)
+            if path.exists() and path.is_file():
+                continue
+            self.files.delete_by_storage_path(owner_username, row["storage_path"])
 
     def _ensure_under_workspace(self, path: Path) -> None:
         workspace = self.workspace_dir.resolve()

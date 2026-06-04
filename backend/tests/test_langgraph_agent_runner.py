@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 import importlib.util
 import os
 from hashlib import sha1
@@ -42,6 +43,31 @@ class FakeMessagesGraph:
 class FakeMessageObject:
     def __init__(self, content):
         self.content = content
+
+
+class FakeStreamingGraph:
+    def __init__(self) -> None:
+        self.get_state_called = False
+
+    async def astream_events(self, payload: dict, config: dict | None = None, version: str = "v2"):
+        yield {"event": "on_chat_model_stream", "data": {"chunk": {"content": "he"}}}
+        yield {"event": "on_chat_model_stream", "data": {"chunk": {"content": "llo"}}}
+        yield {
+            "event": "on_chain_end",
+            "data": {
+                "output": {
+                    "messages": [
+                        {"role": "user", "content": payload["messages"][-1]["content"]},
+                        {"role": "assistant", "content": "hello"},
+                    ],
+                    "active_agent": "main_agent",
+                }
+            },
+        }
+
+    def get_state(self, config: dict):
+        self.get_state_called = True
+        raise ValueError("Subgraph seki-agent not found")
 
 
 def test_langgraph_runner_invokes_injected_graph_factory() -> None:
@@ -161,6 +187,33 @@ def test_langgraph_runner_uses_conversation_thread_and_agent_payload() -> None:
 
     assert graph.configs[0]["configurable"]["thread_id"] == "alice:conv-1"
     assert graph.payloads[0]["agent_name"] == "code_agent"
+
+
+def test_langgraph_runner_stream_uses_event_output_without_get_state() -> None:
+    graph = FakeStreamingGraph()
+    runner = LangGraphAgentRunner(graph_factory=lambda: graph)
+
+    async def collect():
+        return [
+            event
+            async for event in runner.stream(
+                AgentRequest(
+                    owner_username="alice",
+                    conversation_id="conv-1",
+                    message="hello",
+                )
+            )
+        ]
+
+    events = asyncio.run(collect())
+
+    assert graph.get_state_called is False
+    assert [event.kind for event in events] == ["delta", "delta", "final"]
+    assert events[0].text == "he"
+    assert events[1].text == "llo"
+    assert events[-1].response is not None
+    assert events[-1].response.answer == "hello"
+    assert events[-1].response.data == {"active_agent": "main_agent"}
 
 
 def test_langgraph_runner_can_build_graph_from_request_context() -> None:

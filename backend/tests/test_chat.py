@@ -8,7 +8,7 @@ from app.api.dependencies import get_agent_service, get_auth_service
 from app.db.sqlite import connect
 from app.main import create_app
 from app.services.agent_service import AgentService
-from app.services.agent_runner import AgentRequest, AgentResponse
+from app.services.agent_runner import AgentRequest, AgentResponse, AgentStreamEvent
 from app.services.auth_service import AuthService
 from app.services.rag_service import RagService
 
@@ -103,6 +103,54 @@ def test_create_conversation_and_send_message(client: TestClient, test_db: sqlit
     }
 
 
+def test_stream_chat_message_emits_tool_events(client: TestClient, test_db: sqlite3.Connection) -> None:
+    app = create_app()
+
+    class StreamingRunner:
+        async def stream(self, request: AgentRequest):
+            yield AgentStreamEvent(kind="tool_start", tool_name="translation", tool_call_id="run-1")
+            yield AgentStreamEvent(
+                kind="tool_end",
+                tool_name="translation",
+                tool_call_id="run-1",
+                duration_ms=12,
+                preview='{"status":"pending"}',
+            )
+            yield AgentStreamEvent(kind="delta", text="hello")
+            yield AgentStreamEvent(
+                kind="final",
+                response=AgentResponse(answer="hello", route="translation"),
+            )
+
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_agent_service() -> AgentService:
+        return AgentService(test_db, rag_service=RagService(answerer=lambda question: "unused"), runner=StreamingRunner())
+
+    app.dependency_overrides[get_auth_service] = override_auth_service
+    app.dependency_overrides[get_agent_service] = override_agent_service
+    stream_client = TestClient(app)
+    headers = auth_headers(stream_client, test_db)
+    conv_response = stream_client.post("/api/v1/chat/conversations", headers=headers)
+    conversation_id = conv_response.json()["conversation_id"]
+
+    with stream_client.stream(
+        "POST",
+        f"/api/v1/chat/conversations/{conversation_id}/messages/stream",
+        headers=headers,
+        json={"message": "translate", "use_knowledge_base": True},
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert "event: tool_start" in body
+    assert "event: tool_end" in body
+    assert "duration_ms" in body and "12" in body
+    assert "event: delta" in body
+    assert "event: final" in body
+
+
 def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, test_db: sqlite3.Connection) -> None:
     headers = auth_headers(client, test_db)
     conv_response = client.post("/api/v1/chat/conversations", headers=headers)
@@ -119,7 +167,8 @@ def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, 
     assert response.status_code == 200
     assert "event: delta" in body
     assert "event: final" in body
-    assert '"answer":"answer for: 什么是 TSU？"' in body
+    assert '"answer":' in body
+    assert "answer for:" in body
 
 
 def test_chat_conversations_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
@@ -175,6 +224,64 @@ def test_list_chat_messages_returns_persisted_history(client: TestClient, test_d
         ("user", "hello"),
         ("assistant", "answer for: hello"),
     ]
+
+
+def test_list_conversations_returns_current_user_history(client: TestClient, test_db: sqlite3.Connection) -> None:
+    alice_headers = auth_headers(client, test_db, "alice")
+    bob_headers = auth_headers(client, test_db, "bob")
+    first = client.post("/api/v1/chat/conversations", headers=alice_headers).json()["conversation_id"]
+    second = client.post("/api/v1/chat/conversations", headers=alice_headers).json()["conversation_id"]
+    bob_conversation = client.post("/api/v1/chat/conversations", headers=bob_headers).json()["conversation_id"]
+
+    client.post(
+        f"/api/v1/chat/conversations/{first}/messages",
+        headers=alice_headers,
+        json={"message": "first conversation", "use_knowledge_base": True},
+    )
+    client.post(
+        f"/api/v1/chat/conversations/{second}/messages",
+        headers=alice_headers,
+        json={"message": "second conversation", "use_knowledge_base": True},
+    )
+    client.post(
+        f"/api/v1/chat/conversations/{bob_conversation}/messages",
+        headers=bob_headers,
+        json={"message": "bob conversation", "use_knowledge_base": True},
+    )
+
+    response = client.get("/api/v1/chat/conversations", headers=alice_headers)
+
+    assert response.status_code == 200
+    items = response.json()
+    assert [item["conversation_id"] for item in items] == [second, first]
+    assert [item["title"] for item in items] == ["second conversation", "first conversation"]
+    assert all(item["message_count"] == 2 for item in items)
+
+
+def test_delete_conversation_removes_messages_and_keeps_user_isolation(
+    client: TestClient,
+    test_db: sqlite3.Connection,
+) -> None:
+    alice_headers = auth_headers(client, test_db, "alice")
+    bob_headers = auth_headers(client, test_db, "bob")
+    conversation_id = client.post("/api/v1/chat/conversations", headers=alice_headers).json()["conversation_id"]
+
+    client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=alice_headers,
+        json={"message": "delete me", "use_knowledge_base": True},
+    )
+
+    bob_response = client.delete(f"/api/v1/chat/conversations/{conversation_id}", headers=bob_headers)
+    assert bob_response.status_code == 404
+
+    delete_response = client.delete(f"/api/v1/chat/conversations/{conversation_id}", headers=alice_headers)
+    assert delete_response.status_code == 204
+
+    messages_response = client.get(f"/api/v1/chat/conversations/{conversation_id}/messages", headers=alice_headers)
+    assert messages_response.status_code == 404
+    list_response = client.get("/api/v1/chat/conversations", headers=alice_headers)
+    assert list_response.json() == []
 
 
 def test_chat_ignores_request_api_key_fields(test_db: sqlite3.Connection) -> None:

@@ -22,7 +22,7 @@
 ### 文件管理
 
 - 当前用户可上传、列出、下载、删除 workspace 文件。
-- 列表接口会同步扫描 `data/workspace/{username}` 下尚未登记的文件，code agent 直接写入的文件也会出现在文件管理页。
+- 列表接口会同步扫描 `data/workspace/{username}`：补录尚未登记的文件，并清理磁盘上已不存在的旧记录；code agent 直接写入/删除 workspace 文件后，文件管理页刷新能看到一致状态。
 - 文件名保留中文，仅清理 Windows 非法字符。
 - 单文件上传默认限制 600MB。
 
@@ -50,7 +50,9 @@
 - API key 统一由后端环境变量提供，前端不再提供临时 key 输入。
 - Chat SSE 接口已实现，前端可增量展示 assistant 回复。
 - 前端 Agent 入口会恢复最近一次 conversation 并从后端拉取历史消息，切换页面后可继续对话。
-- 当前 SSE 是接口层分片，真实 token 级流式仍待做。
+- Chat SSE 已接入 LangGraph `astream_events`，支持 token 级 `delta`、工具开始/结束/错误与耗时展示。
+- Chat SSE 的 final 事件由 LangGraph 结束事件输出生成，不再在流式结束后调用 `get_state()`，避免当前 LangGraph 版本下 `checkpoint_ns=seki-agent` 被误解释为子图路径。
+- 对话上下文窗口为最多 50 条；超过时把「最近 30 条之前」的内容压缩为摘要，再与最近 30 条一起传给模型。
 
 ### Agent 工具
 
@@ -81,6 +83,9 @@
 - 翻译/SPI/差分/Chat 页面的最近任务或 conversation 缓存按用户名隔离 localStorage。
 - Agent 聊天区域已改为内部滚动。
 - 侧边栏显示当前账号并提供退出登录，退出时清除 token 和当前用户名后回到登录页。
+- Agent 页面已补齐历史会话侧栏：用户可查看自己的 conversation 列表、切换历史会话继续对话、新建空白会话，并显式删除不需要的历史会话。
+- Agent 历史会话选择已改为专属下拉框，历史过多时不会撑开页面或把聊天输入区挤出视口。
+- 文件管理页支持一次选择多个文件逐个上传；上传中会禁用文件选择和上传按钮。
 
 ### 可观测性
 
@@ -93,11 +98,11 @@
 
 ### Agent 主线
 
-- 真正 token 级流式输出：扩展 `AgentRunner` streaming 协议并接 LangGraph/ChatOpenAI 原生 stream。
+- 进一步收紧流式过滤（例如只展示目标 agent 节点的 token、更细粒度 retriever 事件）。
 - 系统化验证 `file_lookup -> translation/SPI/diff` 在真实 LangGraph 中的稳定性。
 - 更强文件选择：支持前端“当前选中文件上下文”传给 Agent，降低模型查错文件概率。
-- 长上下文摘要：接入可测试的 conversation summarization 策略。
-- 更完整的工具调用可视化：展示工具开始、工具结果、错误、耗时。
+- 长上下文摘要：继续补充更多边界测试和真实模型联调观察。
+- 更完整的工具调用可视化：继续细化工具结果、错误、耗时和 retriever 事件展示。
 
 ### Web Search
 

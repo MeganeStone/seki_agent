@@ -57,6 +57,7 @@ class CodeExecutionService:
         max_output_chars: int = 8000,
         default_timeout_seconds: int = 30,
         blocked_name_patterns: list[str] | None = None,
+        after_delete_path=None,
     ):
         settings = get_settings()
         roots = allowed_roots or settings.code_agent_allowed_roots or [
@@ -86,6 +87,7 @@ class CodeExecutionService:
         ]
         self.audit_records: list[CodeOperationRecord] = []
         self.created_paths: set[Path] = set()
+        self.after_delete_path = after_delete_path
         if not self._is_under_allowed_root(self.default_root):
             raise ValueError("default_root must be under an allowed root")
         for root in self.writable_roots:
@@ -253,6 +255,7 @@ class CodeExecutionService:
                     )
                 shutil.rmtree(resolved)
                 self._forget_created_path(resolved)
+                self._after_delete_path(owner_username, resolved)
                 return self._record_result(
                     "delete_path",
                     "succeeded",
@@ -268,6 +271,7 @@ class CodeExecutionService:
             if resolved.is_file():
                 resolved.unlink()
                 self._forget_created_path(resolved)
+                self._after_delete_path(owner_username, resolved)
                 return self._record_result(
                     "delete_path",
                     "succeeded",
@@ -822,6 +826,11 @@ class CodeExecutionService:
             )
         )
         return CodeExecutionResult(status=status, message=message, data=payload)
+
+    def _after_delete_path(self, owner_username: str, resolved: Path) -> None:
+        if not self.after_delete_path:
+            return
+        self.after_delete_path(owner_username, resolved)
 
     @staticmethod
     def _now() -> datetime:

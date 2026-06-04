@@ -124,3 +124,27 @@ def test_list_files_includes_code_agent_created_workspace_files(
     items = response.json()["items"]
     assert any(item["filename"] == "scripts/task.py" for item in items)
     assert any(item["size"] == created.stat().st_size for item in items)
+
+
+def test_list_files_removes_records_for_missing_workspace_files(
+    client: TestClient,
+    test_db: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    headers = auth_headers(client, test_db, "alice")
+    upload_response = client.post(
+        "/api/v1/files",
+        headers=headers,
+        files={"file": ("stale.txt", b"hello", "text/plain")},
+    )
+    uploaded = upload_response.json()
+    workspace_dir = tmp_path / "workspace"
+    owner_dir = workspace_dir / "alice"
+    for path in owner_dir.iterdir():
+        if path.name.startswith(f"{uploaded['id']}_"):
+            path.unlink()
+
+    response = client.get("/api/v1/files", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []

@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { createConversation, listChatMessages, sendChatMessage, streamChatMessage } from '../api/chat'
+import {
+  createConversation,
+  deleteConversation,
+  listChatMessages,
+  listConversations,
+  sendChatMessage,
+  streamChatMessage,
+} from '../api/chat'
 import { cancelCodeOperation, confirmCodeOperation, listCodeOperations } from '../api/codeOperations'
 import { getDiffTask } from '../api/diff'
 import { downloadFile } from '../api/files'
 import { getSpiTask } from '../api/spi'
 import { getTranslationTask } from '../api/translation'
-import type { ChatTurn } from '../types/chat'
+import type { AgentToolEvent, ChatTurn, ConversationRead } from '../types/chat'
 import type { CodeOperation } from '../types/codeOperations'
 import { scopedStorageKey } from '../utils/storageScope'
 
@@ -41,6 +48,27 @@ function createClientId(): string {
     return crypto.randomUUID()
   }
   return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function messagesToTurns(messages: Awaited<ReturnType<typeof listChatMessages>>): ChatTurn[] {
+  return messages
+    .filter((item) => item.role !== 'tool')
+    .map((item) => ({
+      id: item.id,
+      role: item.role === 'user' ? 'user' : 'assistant',
+      content: item.content,
+    }))
+}
+
+function formatConversationTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function objectValue(data: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
@@ -102,6 +130,9 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
   const [conversationId, setConversationId] = useState(
     () => window.localStorage.getItem(conversationStorageKey) ?? '',
   )
+  const [conversations, setConversations] = useState<ConversationRead[]>([])
+  const [conversationsLoading, setConversationsLoading] = useState(false)
+  const [deletingConversationId, setDeletingConversationId] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [message, setMessage] = useState('')
   const [useKnowledgeBase, setUseKnowledgeBase] = useState(true)
@@ -117,47 +148,83 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
   ])
 
   useEffect(() => {
-    if (!accessToken) return
-    let isCurrent = true
-    const savedConversationId = window.localStorage.getItem(conversationStorageKey)
-    if (!savedConversationId) {
+    if (!accessToken) {
       queueMicrotask(() => {
-        if (!isCurrent) return
+        setConversations([])
         setConversationId('')
         setTurns([])
       })
-      return () => {
-        isCurrent = false
-      }
+      return
     }
-    queueMicrotask(() => {
-      if (isCurrent) setConversationId(savedConversationId)
-    })
+    let isCurrent = true
 
-    listChatMessages(accessToken, savedConversationId)
-      .then((messages) => {
+    async function loadInitialConversations() {
+      setConversationsLoading(true)
+      setError('')
+      try {
+        if (!accessToken) return
+        const items = await listConversations(accessToken)
         if (!isCurrent) return
-        setTurns(
-          messages
-            .filter((item) => item.role !== 'tool')
-            .map((item) => ({
-              id: item.id,
-              role: item.role === 'user' ? 'user' : 'assistant',
-              content: item.content,
-            })),
-        )
-      })
-      .catch(() => {
+        setConversations(items)
+
+        const savedConversationId = window.localStorage.getItem(conversationStorageKey)
+        const selectedConversationId = items.some((item) => item.conversation_id === savedConversationId)
+          ? savedConversationId
+          : items[0]?.conversation_id ?? ''
+
+        if (!selectedConversationId) {
+          window.localStorage.removeItem(conversationStorageKey)
+          setConversationId('')
+          setTurns([])
+          return
+        }
+
+        window.localStorage.setItem(conversationStorageKey, selectedConversationId)
+        setConversationId(selectedConversationId)
+        const messages = await listChatMessages(accessToken, selectedConversationId)
+        if (!isCurrent) return
+        setTurns(messagesToTurns(messages))
+      } catch (error) {
         if (!isCurrent) return
         window.localStorage.removeItem(conversationStorageKey)
         setConversationId('')
         setTurns([])
-      })
+        setError(error instanceof Error ? error.message : '会话历史加载失败')
+      } finally {
+        if (isCurrent) setConversationsLoading(false)
+      }
+    }
+
+    void loadInitialConversations()
 
     return () => {
       isCurrent = false
     }
   }, [accessToken, conversationStorageKey])
+
+  async function refreshConversationList(): Promise<ConversationRead[]> {
+    if (!accessToken) return []
+    const items = await listConversations(accessToken)
+    setConversations(items)
+    return items
+  }
+
+  async function loadConversation(nextConversationId: string) {
+    if (!accessToken || !nextConversationId) return
+    setError('')
+    setLoading(true)
+    try {
+      const messages = await listChatMessages(accessToken, nextConversationId)
+      setConversationId(nextConversationId)
+      window.localStorage.setItem(conversationStorageKey, nextConversationId)
+      setTurns(messagesToTurns(messages))
+      await refreshConversationList()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '会话历史加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function ensureConversation(): Promise<string> {
     // 会话采用懒创建：用户第一次发送消息时才向后端创建 conversation。
@@ -167,6 +234,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
     const created = await createConversation(accessToken)
     setConversationId(created.conversation_id)
     window.localStorage.setItem(conversationStorageKey, created.conversation_id)
+    await refreshConversationList()
     return created.conversation_id
   }
 
@@ -201,32 +269,91 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
         use_knowledge_base: useKnowledgeBase,
       }
       let receivedStreamContent = false
+
+      const upsertAssistantTurn = (updater: (turn: ChatTurn) => ChatTurn) => {
+        setTurns((current) =>
+          current.map((turn) => (turn.id === assistantTurnId ? updater(turn) : turn)),
+        )
+      }
+
+      const upsertToolEvent = (
+        toolCallId: string | null,
+        toolName: string,
+        patch: Partial<AgentToolEvent>,
+      ) => {
+        const eventId = toolCallId ?? `${toolName}-${Date.now()}`
+        upsertAssistantTurn((turn) => {
+          const existing = turn.toolEvents ?? []
+          const index = existing.findIndex((item) => item.id === eventId)
+          if (index >= 0) {
+            const next = [...existing]
+            next[index] = { ...next[index], ...patch }
+            return { ...turn, toolEvents: next }
+          }
+          return {
+            ...turn,
+            toolEvents: [
+              ...existing,
+              {
+                id: eventId,
+                toolName,
+                status: 'running',
+                ...patch,
+              },
+            ],
+          }
+        })
+      }
+
       try {
         // 优先走 SSE。若浏览器/代理不支持或后端流失败，再回退到普通 POST。
         await streamChatMessage(accessToken, activeConversationId, payload, {
           onDelta: (text) => {
             receivedStreamContent = true
-            setTurns((current) =>
-              current.map((turn) =>
-                turn.id === assistantTurnId ? { ...turn, content: `${turn.content}${text}` } : turn,
-              ),
-            )
+            upsertAssistantTurn((turn) => ({ ...turn, content: `${turn.content}${text}` }))
+          },
+          onStatus: (text) => {
+            upsertAssistantTurn((turn) => ({ ...turn, statusText: text }))
+          },
+          onToolStart: ({ toolName, toolCallId }) => {
+            upsertToolEvent(toolCallId, toolName, { status: 'running' })
+            upsertAssistantTurn((turn) => ({
+              ...turn,
+              statusText: `正在调用 ${toolName} 工具...`,
+            }))
+          },
+          onToolEnd: ({ toolName, toolCallId, durationMs, preview }) => {
+            upsertToolEvent(toolCallId, toolName, {
+              status: 'done',
+              durationMs,
+              preview,
+            })
+            upsertAssistantTurn((turn) => ({
+              ...turn,
+              statusText: `${toolName} 完成${durationMs ? ` (${durationMs}ms)` : ''}`,
+            }))
+          },
+          onToolError: ({ toolName, toolCallId, durationMs, error }) => {
+            upsertToolEvent(toolCallId, toolName, {
+              status: 'error',
+              durationMs,
+              error,
+            })
+            upsertAssistantTurn((turn) => ({
+              ...turn,
+              statusText: `${toolName} 失败`,
+            }))
           },
           onFinal: (response) => {
-            setTurns((current) =>
-              current.map((turn) =>
-                turn.id === assistantTurnId
-                  ? {
-                      ...turn,
-                      content: response.answer,
-                      sources: response.sources,
-                      route: response.route,
-                      data: response.data,
-                      pendingOperation: pendingOperationFromData(response.data),
-                    }
-                  : turn,
-              ),
-            )
+            upsertAssistantTurn((turn) => ({
+              ...turn,
+              content: response.answer,
+              sources: response.sources,
+              route: response.route,
+              data: response.data,
+              pendingOperation: pendingOperationFromData(response.data),
+              statusText: null,
+            }))
           },
         })
       } catch (streamError) {
@@ -249,6 +376,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
           ),
         )
       }
+      await refreshConversationList()
     } catch (error) {
       setError(error instanceof Error ? error.message : '消息发送失败')
     } finally {
@@ -262,6 +390,33 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
     setMessage('')
     setError('')
     window.localStorage.removeItem(conversationStorageKey)
+  }
+
+  async function handleDeleteConversation(targetConversationId: string) {
+    if (!accessToken) return
+    const shouldDelete = window.confirm('删除后该会话和消息会从数据库移除，是否继续？')
+    if (!shouldDelete) return
+
+    setDeletingConversationId(targetConversationId)
+    setError('')
+    try {
+      await deleteConversation(accessToken, targetConversationId)
+      const items = await refreshConversationList()
+      if (targetConversationId !== conversationId) return
+
+      const nextConversationId = items[0]?.conversation_id ?? ''
+      if (!nextConversationId) {
+        window.localStorage.removeItem(conversationStorageKey)
+        setConversationId('')
+        setTurns([])
+        return
+      }
+      await loadConversation(nextConversationId)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '会话删除失败')
+    } finally {
+      setDeletingConversationId('')
+    }
   }
 
   async function handleRefreshToolTurn(turn: ChatTurn) {
@@ -424,27 +579,95 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
 
   return (
     <section className="chat-page" aria-labelledby="chat-title">
-      <div className="chat-toolbar">
-        <div>
-          <h2 id="chat-title">知识库问答 / Agent 入口</h2>
-          <p>{conversationId ? `conversation: ${conversationId}` : '新对话将在首次发送时创建'}</p>
-        </div>
-        <div className="chat-toolbar-actions">
-          {conversationId && (
-            <button type="button" onClick={() => void handleRefreshPendingOperations()}>
-              刷新待确认
-            </button>
-          )}
+      <aside className="conversation-sidebar" aria-label="历史会话">
+        <div className="conversation-sidebar-head">
+          <div>
+            <h3>历史会话</h3>
+            <p>{conversationsLoading ? '正在加载...' : `${conversations.length} 个会话`}</p>
+          </div>
           <button type="button" onClick={handleNewConversation}>
             新对话
           </button>
         </div>
-      </div>
 
-      <div className="chat-feed" aria-live="polite">
-        {turns.length === 0 && (
-          <div className="empty-state">可以直接聊天，也可以让 Agent 查询知识库或调用已接入的业务工具。</div>
-        )}
+        <label className="conversation-picker">
+          <span>选择历史会话</span>
+          <select
+            value={conversationId}
+            onChange={(event) => {
+              if (!event.target.value) {
+                handleNewConversation()
+                return
+              }
+              void loadConversation(event.target.value)
+            }}
+            disabled={loading || conversationsLoading || conversations.length === 0}
+          >
+            <option value="">新对话</option>
+            {conversations.map((conversation) => (
+              <option value={conversation.conversation_id} key={conversation.conversation_id}>
+                {conversation.title} ({conversation.message_count} 条)
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="conversation-current">
+          {conversations.length === 0 && (
+            <div className="conversation-empty">暂无历史会话，发送第一条消息后会自动保存。</div>
+          )}
+          {conversationId && (
+            <>
+              {(() => {
+                const activeConversation = conversations.find((item) => item.conversation_id === conversationId)
+                return (
+                  <div className="conversation-summary">
+                    <strong>{activeConversation?.title ?? '当前会话'}</strong>
+                    <span>
+                      {activeConversation
+                        ? `${activeConversation.message_count} 条消息`
+                        : '新对话将在首次发送时创建'}
+                    </span>
+                    {activeConversation?.updated_at && (
+                      <small>更新于 {formatConversationTime(activeConversation.updated_at)}</small>
+                    )}
+                  </div>
+                )
+              })()}
+              <div className="conversation-actions">
+                <button
+                  type="button"
+                  className="conversation-delete"
+                  onClick={() => void handleDeleteConversation(conversationId)}
+                  disabled={conversationId === deletingConversationId}
+                >
+                  {conversationId === deletingConversationId ? '删除中' : '删除当前会话'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
+
+      <div className="chat-main">
+        <div className="chat-toolbar">
+          <div>
+            <h2 id="chat-title">知识库问答 / Agent 入口</h2>
+            <p>{conversationId ? `conversation: ${conversationId}` : '新对话将在首次发送时创建'}</p>
+          </div>
+          <div className="chat-toolbar-actions">
+            {conversationId && (
+              <button type="button" onClick={() => void handleRefreshPendingOperations()}>
+                刷新待确认
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="chat-feed" aria-live="polite">
+          {turns.length === 0 && (
+            <div className="empty-state">可以直接聊天，也可以让 Agent 查询知识库或调用已接入的业务工具。</div>
+          )}
 
         {turns.map((turn) => {
           const taskId = turn.data ? stringValue(turn.data, 'task_id') : null
@@ -461,7 +684,36 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
           return (
             <article className={`chat-turn ${turn.role}`} key={turn.id}>
               <strong>{turn.role === 'user' ? '你' : 'Seki Agent'}</strong>
-              <p>{turn.content}</p>
+              {turn.statusText && turn.role === 'assistant' && (
+                <p className="chat-status">{turn.statusText}</p>
+              )}
+              {turn.toolEvents && turn.toolEvents.length > 0 && (
+                <div className="tool-stream" aria-label="工具执行过程">
+                  {turn.toolEvents.map((toolEvent) => (
+                    <div
+                      className={`tool-stream-item ${toolEvent.status}`}
+                      key={toolEvent.id}
+                    >
+                      <div className="tool-stream-head">
+                        <span>{toolEvent.toolName}</span>
+                        <span className={`status-badge ${toolEvent.status}`}>
+                          {toolEvent.status === 'running'
+                            ? '执行中'
+                            : toolEvent.status === 'error'
+                              ? '失败'
+                              : '完成'}
+                        </span>
+                        {toolEvent.durationMs !== undefined && (
+                          <span className="tool-duration">{toolEvent.durationMs}ms</span>
+                        )}
+                      </div>
+                      {toolEvent.preview && <pre className="tool-preview">{toolEvent.preview}</pre>}
+                      {toolEvent.error && <span className="tool-error">{toolEvent.error}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p>{turn.content || (turn.route === 'streaming' ? '▌' : '')}</p>
               {turn.sources && turn.sources.length > 0 && (
                 <div className="source-list">
                   {turn.sources.map((source, index) => (
@@ -534,29 +786,30 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
         })}
 
         {loading && <div className="empty-state">正在生成回答...</div>}
-      </div>
+        </div>
 
-      {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error">{error}</p>}
 
-      <form className="chat-input" onSubmit={handleSubmit}>
-        <label className="toggle-line">
-          <input
-            checked={useKnowledgeBase}
-            onChange={(event) => setUseKnowledgeBase(event.target.checked)}
-            type="checkbox"
+        <form className="chat-input" onSubmit={handleSubmit}>
+          <label className="toggle-line">
+            <input
+              checked={useKnowledgeBase}
+              onChange={(event) => setUseKnowledgeBase(event.target.checked)}
+              type="checkbox"
+            />
+            使用知识库 / RAG
+          </label>
+          <textarea
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="输入问题、业务查询或代码任务..."
+            rows={3}
           />
-          使用知识库 / RAG
-        </label>
-        <textarea
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder="输入问题、业务查询或代码任务..."
-          rows={3}
-        />
-        <button type="submit" disabled={!canSend}>
-          {loading ? '发送中' : '发送'}
-        </button>
-      </form>
+          <button type="submit" disabled={!canSend}>
+            {loading ? '发送中' : '发送'}
+          </button>
+        </form>
+      </div>
     </section>
   )
 }

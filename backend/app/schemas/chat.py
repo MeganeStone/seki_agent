@@ -8,6 +8,15 @@ class ConversationCreateResponse(BaseModel):
     created_at: datetime
 
 
+class ConversationRead(BaseModel):
+    conversation_id: str
+    title: str
+    message_count: int
+    active_agent: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1)
     use_knowledge_base: bool = True

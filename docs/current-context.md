@@ -530,3 +530,103 @@ npm run build
 ```
 
 结果：后端 41 passed、1 skipped；前端 build 通过。
+
+## 本轮 A1：真实流式 + 工具可视化 + 50 条上下文摘要
+
+- `LangGraphAgentRunner.stream()` 使用 `graph.astream_events(version="v2")` 推送 `delta`、`tool_start`、`tool_end`、`tool_error`、`status`，并从 graph 结束事件输出生成 `final`。
+- `AgentService.ask_stream()` + Chat `/messages/stream` 异步 SSE；无 `stream` 能力的 runner 仍按字符回退。
+- 前端 Agent 页展示 `statusText`、工具卡片（名称、状态、耗时、预览、错误）。
+- 上下文：单 agent 从 DB 最多读 500 条；传给模型时 ≤50 条全量，>50 条则「摘要 + 最近 30 条」。摘要存 `conversations.agent_summaries`，由 `ChatModelService.summarize_messages` 增量生成。
+- 新增测试：`test_conversation_history.py`、`test_stream_chat_message_emits_tool_events`、超长对话摘要用例。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_conversation_history.py backend\tests\test_chat.py backend\tests\test_agent_service.py::test_agent_service_builds_summary_history_when_over_limit -q --basetemp=backend/.tmp/pytest
+cd frontend
+npm run build
+npm run lint
+```
+
+结果：上述后端 13 passed；前端 build/lint 通过。真实 LangGraph 流式需本机配置 `SEKI_RAG_API_KEY` 后在前端 Agent 页手动验证。
+
+## 本轮 A1 修复：流式 final 不再调用 get_state
+
+用户实测前端报 network error，后端日志为 `ValueError: Subgraph seki-agent not found`。
+
+- 根因：Cursor 版本的 `LangGraphAgentRunner.stream()` 在 `astream_events` 结束后调用 `graph.get_state(config)` 生成 final；当前 LangGraph/checkpointer 命名空间下该调用会把 `checkpoint_ns=seki-agent` 解释到子图路径，导致 `Subgraph seki-agent not found`，SSE 连接异常中断。
+- 修复：流式执行过程中从 `on_chain_end/on_graph_end` 的最终 graph 输出捕获 final 状态，只接受包含 `answer/messages/route/active_agent/agent_name` 的 graph-like 输出；若没有最终状态但已收到 token delta，则用已流出的 token 拼接 final answer。这样不会二次调用 `get_state()`，也不会重复执行 Agent。
+- 新增回归测试：`test_langgraph_runner_stream_uses_event_output_without_get_state`，模拟 `get_state()` 抛出 `Subgraph seki-agent not found`，验证 stream 仍能输出 delta + final 且不会调用 `get_state()`。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py -q -p no:cacheprovider
+```
+
+结果：14 passed、1 skipped。
+
+当前测试环境限制：`backend/tests/test_chat.py backend/tests/test_agent_service.py backend/tests/test_conversation_history.py` 在本机 Codex shell 中启动 pytest 时，因无法创建/清理临时目录而失败，错误为 Windows `PermissionError: [WinError 5] 拒绝访问`，不是业务断言失败。用户可在本机普通终端修复临时目录权限后重跑相关 SSE/AgentService 测试。
+
+## 本轮 Agent 历史会话侧栏补完
+
+用户反馈：Agent 页面此前只能恢复最近一次 conversation，无法像成熟 Agent 产品一样在侧边栏选择历史会话继续对话，也无法显式删除历史会话；如果历史会话只能持续积累，会带来数据库长期膨胀风险。
+
+- 后端接口和 schema 已沿用上一步半成品：`GET /api/v1/chat/conversations` 返回当前用户自己的会话列表，`DELETE /api/v1/chat/conversations/{conversation_id}` 只删除当前用户自己的会话、消息和关联 pending operation；跨用户删除仍返回 404。
+- 前端 `ChatPage` 已补完历史会话侧栏：登录后拉取 conversation 列表；优先恢复 localStorage 中当前用户最近会话，若不存在则自动打开后端列表中最近一条；点击历史会话会加载该 conversation 的消息继续对话。
+- “新对话”现在只清空当前输入区/消息区并移除最近会话缓存，不删除数据库历史；用户发送第一条消息时才懒创建新的 conversation。
+- 只有点击历史会话上的删除按钮并确认后，才会调用后端删除接口真正删库；如果删除的是当前会话，会自动切到最新剩余会话，否则进入空白新对话。
+- 会话侧栏展示标题、消息数、更新时间，移动端会折叠成页面上方的可滚动区域。
+
+验证：
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：前端 lint/build 通过。
+
+后端回归尝试：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_chat.py backend\tests\test_agent_service.py -q -p no:cacheprovider --basetemp=backend/.tmp/pytest-chat-history-run
+```
+
+结果：当前 Codex shell 仍因 Windows `PermissionError: [WinError 5] 拒绝访问` 无法在 `backend/.tmp` 下创建/清理 pytest 临时目录，所有用例在 setup 阶段失败，不是业务断言失败。建议用户在本机普通终端修复临时目录权限后重跑上述后端测试。
+
+## 本轮文件管理与历史会话体验修复
+
+用户反馈 4 个问题：历史会话过多后撑坏 Agent 页面布局；code agent 删除文件后文件管理页刷新仍残留文件名；上传过程中仍可继续选择文件；文件管理只支持单文件上传。
+
+- Agent 历史会话区改为专属下拉框：`ChatPage` 使用 `<select>` 选择历史 conversation，当前会话只展示摘要和删除按钮，不再把全部历史会话逐条渲染到页面上，避免历史过多时把聊天区、输入框和发送按钮挤出页面。
+- 文件列表同步改为双向同步：`FileService.sync_workspace_files(...)` 会先清理 files 表中磁盘已不存在的记录，再补录 workspace 中尚未登记的新文件；`GET /api/v1/files` 每次刷新都会触发同步。
+- code agent 删除文件后主动同步文件表：`CodeExecutionService` 新增删除成功后的回调；默认 LangGraph code agent runner 和 pending operation 确认执行路径会传入 `FileService.sync_workspace_files(...)`，删除 workspace 文件后同步清理 files 表。
+- 文件上传前端改为多选：文件 input 增加 `multiple`，页面保存 `selectedFiles` 数组并逐个调用现有单文件上传接口；上传中禁用文件选择框和上传按钮，避免并发选择/重复提交造成混乱。
+- 新增测试覆盖意图：文件列表刷新会清理缺失磁盘文件的旧记录；code agent 删除 workspace 文件后会同步清理 files 表记录。
+
+验证：
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：前端 lint/build 通过。
+
+后端验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_files.py backend\tests\test_code_langchain_tool_adapter.py -q -p no:cacheprovider --basetemp=.pytest_tmp
+.\backend\.venv\Scripts\python.exe -m compileall backend\app\services\file_service.py backend\app\repositories\file_repository.py backend\app\services\code_execution_service.py backend\app\services\code_operation_service.py backend\app\services\agent_runner_factory.py backend\app\api\dependencies.py
+```
+
+结果：当前 Codex shell 对 pytest 临时目录和 `__pycache__` 写入均报 Windows `PermissionError`，无法完成 pytest/compileall。已改用只读 AST 解析检查本轮后端文件语法：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -c "import ast, pathlib; files=['backend/app/services/file_service.py','backend/app/repositories/file_repository.py','backend/app/services/code_execution_service.py','backend/app/services/code_operation_service.py','backend/app/services/agent_runner_factory.py','backend/app/api/dependencies.py']; [ast.parse(pathlib.Path(f).read_text(encoding='utf-8'), filename=f) for f in files]; print('syntax ok')"
+```
+
+结果：`syntax ok`。后端业务测试仍建议用户在本机普通终端修复临时目录/pycache 权限后重跑。

@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.db.sqlite import connect
-from app.services.agent_runner import AgentRequest, AgentResponse, ChatHistoryMessage
+from app.services.agent_runner import AgentRequest, AgentResponse, AgentStreamEvent, ChatHistoryMessage
 from app.services.agent_service import AgentService
 from app.services.chat_model_service import ChatModelService
 from app.services.rag_service import RagService
@@ -590,3 +590,30 @@ def test_agent_service_injected_runner_keeps_diff_request_boundary(test_db: sqli
     assert response.route == "test-route"
     assert runner.requests[0].message == "比较版本 left_file_id=old-1 right_file_id=new-1"
     assert diff_service.calls == []
+
+
+def test_agent_service_builds_summary_history_when_over_limit(test_db: sqlite3.Connection) -> None:
+    class SummarizingChatModel:
+        def summarize_messages(self, messages, previous_summary=None, api_key=None):
+            return f"summary:{len(messages)}:{previous_summary or ''}"
+
+    class RecordingRunner:
+        def __init__(self) -> None:
+            self.requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResponse:
+            self.requests.append(request)
+            return AgentResponse(answer="ok", route="direct")
+
+    runner = RecordingRunner()
+    service = AgentService(test_db, runner=runner, chat_model_service=SummarizingChatModel())
+    conversation = service.create_conversation("alice")
+
+    for index in range(51):
+        service.ask("alice", conversation.conversation_id, f"message-{index}")
+
+    service.ask("alice", conversation.conversation_id, "message-51")
+    last_history = runner.requests[-1].history
+    assert last_history[0].content.startswith("[Earlier conversation summary]")
+    assert len(last_history) == 31
+    assert any(item.content == "message-50" for item in last_history)

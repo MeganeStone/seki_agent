@@ -329,5 +329,97 @@ Agent 测试原则：
 
 当前限制：
 
-- SSE 已改善前端流式体验，但仍是 runner 完成后再分片输出最终 answer；真实 token 级流式需下一步扩展 runner stream 协议和 LangGraph/LLM 原生 streaming。
+- 已完成真实 token 级 SSE：`LangGraphAgentRunner.stream()` 使用 `astream_events`，推送 `delta` / `tool_start` / `tool_end` / `tool_error` / `status` / `final`；前端 Agent 页展示工具执行过程与耗时。
+- 已完成对话上下文扩展：单 agent 历史从 20 提升到「摘要 + 最近 30 条」策略（总上下文预算 50 条，超出后滚动压缩）。
 - web_search 已有旧 provider 兼容实现，但还没有做配额、缓存、审计和 provider 抽象管理 UI；后续生产化时继续补。
+
+本轮 A1 流式修复：
+
+- 用户实测 SSE 对话触发前端 network error，后端日志显示 `ValueError: Subgraph seki-agent not found`。
+- 根因是流式结束后用 `graph.get_state(config)` 生成 final，在当前 LangGraph/checkpointer 命名空间下会把 `seki-agent` 误解释为子图路径。
+- 已改为从 `astream_events` 的 graph 结束事件输出生成 final，并在缺少最终状态时用已流出的 token 拼接 answer，避免二次调用 `get_state()` 或重复执行 Agent。
+- 已新增 `test_langgraph_runner_stream_uses_event_output_without_get_state` 锁定回归。
+
+验证：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_langgraph_agent_runner.py -q -p no:cacheprovider
+```
+
+结果：14 passed、1 skipped。
+
+限制：当前 Codex shell 无法创建/清理 pytest 临时目录，导致依赖 `tmp_path` 的 chat/agent_service 测试在 setup 阶段因 Windows `PermissionError` 失败；需要在本机普通终端或修复临时目录权限后重跑完整 SSE 链路测试。
+
+## 本轮 Agent 历史会话侧栏
+
+用户反馈：当前 Agent 页面只有最近一次 conversation 缓存，无法在界面找回历史对话，也不能显式删除历史对话，长期使用会导致历史会话只能在数据库中积累。
+
+已完成：
+
+- 前端 `ChatPage` 接入历史会话侧栏，登录后调用 `GET /api/v1/chat/conversations` 拉取当前用户会话列表。
+- 进入页面时优先恢复当前用户 localStorage 中的最近 conversation；如果该 conversation 已不存在，则自动打开后端最近一条历史会话；如果没有历史会话，则保持空白新对话。
+- “新对话”只清空当前页面状态并移除最近会话缓存，不删除历史数据；首次发送消息时才创建新的 conversation。
+- 点击历史会话会调用历史消息接口恢复该 conversation 内容并继续对话。
+- 点击删除并确认后才调用 `DELETE /api/v1/chat/conversations/{conversation_id}` 真正删除会话和消息；删除当前会话后会切到最新剩余会话或空白新对话。
+- CSS 已补齐桌面侧栏和移动端上方滚动会话区。
+
+验证：
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：前端 lint/build 通过。
+
+后端测试尝试：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests\test_chat.py backend\tests\test_agent_service.py -q -p no:cacheprovider --basetemp=backend/.tmp/pytest-chat-history-run
+```
+
+结果：当前 Codex shell 对 `backend/.tmp` 创建/清理 pytest 临时目录无权限，所有相关用例在 setup 阶段因 Windows `PermissionError: [WinError 5] 拒绝访问` 失败；不是业务断言失败。用户可在本机普通终端重跑。
+
+下一步计划候选：
+
+- 优先做一次前后端联调：启动本地后端和前端，在 Agent 页面验证“新对话、发送消息、切换历史、删除历史、重新登录恢复历史”的完整交互。
+- 若联调通过，再继续 Agent 主线：支持前端传入当前选中文件上下文，降低 Agent 调用 translation/SPI/diff 时查错文件的概率。
+
+## 本轮文件管理与历史会话体验修复
+
+用户反馈：
+
+1. 历史对话太多时应有专属下拉框，否则超出页面后找不到历史会话，并且会把聊天框和发送按钮撑到页面之外。
+2. code agent 删除文件后，文件管理界面刷新仍残留文件名；刷新时应同步 workspace 文件信息，code agent 删除时也应更新 files 表。
+3. 文件上传途中选择文件按钮应禁用。
+4. 文件上传希望支持多文件一起上传。
+
+已完成：
+
+- `ChatPage` 的历史会话区域改为 `<select>` 下拉框，只展示当前会话摘要和删除当前会话按钮，避免历史列表增长影响聊天区布局。
+- `FileService` 新增公开 `sync_workspace_files(...)`，每次 `list_files` 前执行双向同步：删除磁盘缺失的旧记录，再补录磁盘新增文件。
+- `CodeExecutionService` 新增删除成功回调；默认 code agent runner 和 pending operation 确认执行路径会把该回调接到 `FileService.sync_workspace_files(...)`。
+- `FilesPage` 改为 `multiple` 文件选择，上传时逐个调用现有单文件上传接口；上传中禁用文件 input 和上传按钮。
+- 新增/调整测试意图：`test_list_files_removes_records_for_missing_workspace_files` 和 `test_code_tool_delete_syncs_file_table_for_workspace_file`。
+
+验证：
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：前端 lint/build 通过。
+
+后端测试在当前 Codex shell 仍受 Windows 权限限制：
+
+- `pytest ... --basetemp=.pytest_tmp` 在 session finish 扫描临时目录时报 `PermissionError: [WinError 5] 拒绝访问`。
+- `compileall` 写入 `__pycache__` 也报 `PermissionError`。
+- 已使用只读 AST 解析检查本轮后端文件语法，结果 `syntax ok`。
+
+下一步计划候选：
+
+- 用户在本机普通终端重跑 `backend/tests/test_files.py backend/tests/test_code_langchain_tool_adapter.py`，确认文件同步业务测试通过。
+- 再做一次前后端手动联调：多文件上传、上传中禁用、文件刷新清理 stale 记录、Agent/code agent 删除文件后文件管理刷新状态一致、历史会话下拉框多会话布局。

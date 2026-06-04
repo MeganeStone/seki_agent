@@ -1,10 +1,18 @@
-from collections.abc import Callable
+import json
+from collections.abc import AsyncIterator, Callable
 from hashlib import sha1
+from time import monotonic
 from typing import Any
 
 from app.core.api_keys import temporary_env_api_key
 from app.services.agent_prompts import TBOX_AGENT_SYSTEM_PROMPT
-from app.services.agent_runner import AgentRequest, AgentResponse, AgentRunner, ChatHistoryMessage
+from app.services.agent_runner import (
+    AgentRequest,
+    AgentResponse,
+    AgentRunner,
+    AgentStreamEvent,
+    ChatHistoryMessage,
+)
 
 
 class MissingAgentDependencyError(RuntimeError):
@@ -36,9 +44,103 @@ class LangGraphAgentRunner:
         state 清洗中完成。
         """
         graph = self._get_graph(request)
+        payload, config = self._build_invoke_payload(request)
+        with temporary_env_api_key("SEKI_RAG_API_KEY", request.api_key):
+            result = graph.invoke(payload, config=config)
+        return self._to_response(result)
+
+    async def stream(self, request: AgentRequest) -> AsyncIterator[AgentStreamEvent]:
+        """Stream LangGraph execution via `astream_events` (token + tool lifecycle)."""
+        graph = self._get_graph(request)
+        payload, config = self._build_invoke_payload(request)
+        tool_started_at: dict[str, float] = {}
+        final_answer_parts: list[str] = []
+        final_values: dict[str, Any] = {}
+
+        if not hasattr(graph, "astream_events"):
+            result = self.run(request)
+            for char in result.answer:
+                yield AgentStreamEvent(kind="delta", text=char)
+            yield AgentStreamEvent(kind="final", response=result)
+            return
+
+        with temporary_env_api_key("SEKI_RAG_API_KEY", request.api_key):
+            async for event in graph.astream_events(payload, config=config, version="v2"):
+                kind = event.get("event")
+                if kind in {"on_chain_end", "on_graph_end"}:
+                    output = event.get("data", {}).get("output")
+                    if isinstance(output, dict) and self._looks_like_graph_output(output):
+                        final_values = output
+                    continue
+
+                if kind == "on_tool_start":
+                    tool_name = str(event.get("name") or "tool")
+                    run_id = str(event.get("run_id") or tool_name)
+                    tool_started_at[run_id] = monotonic()
+                    yield AgentStreamEvent(
+                        kind="tool_start",
+                        tool_name=tool_name,
+                        tool_call_id=run_id,
+                        text=f"正在调用 {tool_name} 工具...",
+                    )
+                    yield AgentStreamEvent(kind="status", text=f"正在调用 {tool_name} 工具...")
+                    continue
+
+                if kind == "on_tool_end":
+                    tool_name = str(event.get("name") or "tool")
+                    run_id = str(event.get("run_id") or tool_name)
+                    started = tool_started_at.pop(run_id, monotonic())
+                    duration_ms = int((monotonic() - started) * 1000)
+                    preview = self._preview_tool_output(event.get("data", {}).get("output"))
+                    yield AgentStreamEvent(
+                        kind="tool_end",
+                        tool_name=tool_name,
+                        tool_call_id=run_id,
+                        duration_ms=duration_ms,
+                        preview=preview,
+                    )
+                    continue
+
+                if kind == "on_tool_error":
+                    tool_name = str(event.get("name") or "tool")
+                    run_id = str(event.get("run_id") or tool_name)
+                    started = tool_started_at.pop(run_id, monotonic())
+                    duration_ms = int((monotonic() - started) * 1000)
+                    error = self._format_tool_error(event.get("data"))
+                    yield AgentStreamEvent(
+                        kind="tool_error",
+                        tool_name=tool_name,
+                        tool_call_id=run_id,
+                        duration_ms=duration_ms,
+                        error=error,
+                    )
+                    continue
+
+                if kind == "on_retriever_start":
+                    yield AgentStreamEvent(kind="status", text="正在检索文档...")
+                    continue
+
+                if kind == "on_retriever_end":
+                    yield AgentStreamEvent(kind="status", text="文档检索完成，正在整理答案...")
+                    continue
+
+                if kind == "on_chat_model_stream":
+                    text = self._extract_stream_chunk_text(event.get("data", {}).get("chunk"))
+                    if text:
+                        final_answer_parts.append(text)
+                        yield AgentStreamEvent(kind="delta", text=text)
+                    continue
+
+            values = final_values
+            if final_answer_parts and not values.get("answer"):
+                values = {**values, "answer": "".join(final_answer_parts)}
+            response = self._to_response(values)
+            yield AgentStreamEvent(kind="final", response=response)
+
+    def _build_invoke_payload(self, request: AgentRequest) -> tuple[dict, dict]:
         agent_histories = request.agent_histories or {request.agent_name: request.history}
         history_messages = LangGraphAgentRunner._history_messages_for_graph(
-            agent_histories.get(request.agent_name, request.history)[-20:]
+            agent_histories.get(request.agent_name, request.history)
         )
         payload = {
             "owner_username": request.owner_username,
@@ -47,10 +149,10 @@ class LangGraphAgentRunner:
             "active_agent": request.agent_name,
             "messages": history_messages + [{"role": "user", "content": request.message}],
             "main_agent_messages": LangGraphAgentRunner._history_messages_for_graph(
-                agent_histories.get("main_agent", ())[-20:]
+                agent_histories.get("main_agent", ())
             ),
             "code_agent_messages": LangGraphAgentRunner._history_messages_for_graph(
-                agent_histories.get("code_agent", ())[-20:]
+                agent_histories.get("code_agent", ())
             ),
             "system_prompt": self.system_prompt,
             "use_knowledge_base": request.use_knowledge_base,
@@ -61,9 +163,58 @@ class LangGraphAgentRunner:
                 "checkpoint_ns": "seki-agent",
             }
         }
-        with temporary_env_api_key("SEKI_RAG_API_KEY", request.api_key):
-            result = graph.invoke(payload, config=config)
-        return self._to_response(result)
+        return payload, config
+
+    @staticmethod
+    def _extract_stream_chunk_text(chunk: object) -> str:
+        if chunk is None:
+            return ""
+        content = getattr(chunk, "content", None)
+        if content is None and isinstance(chunk, dict):
+            content = chunk.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        return ""
+
+    @staticmethod
+    def _preview_tool_output(output: object, limit: int = 240) -> str:
+        if output is None:
+            return ""
+        if isinstance(output, str):
+            text = output
+        else:
+            try:
+                text = json.dumps(output, ensure_ascii=False)
+            except TypeError:
+                text = str(output)
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    @staticmethod
+    def _format_tool_error(data: object) -> str:
+        if not isinstance(data, dict):
+            return "tool failed"
+        for key in ("error", "message", "detail"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "tool failed"
+
+    @staticmethod
+    def _looks_like_graph_output(output: dict) -> bool:
+        return any(key in output for key in ("answer", "messages", "route", "active_agent", "agent_name"))
 
     def _get_graph(self, request: AgentRequest):
         """按用户会话懒创建 graph 实例，避免所有会话共享同一个内存 checkpointer。"""

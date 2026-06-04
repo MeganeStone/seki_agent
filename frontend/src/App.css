@@ -348,9 +348,147 @@ code {
 }
 
 .chat-page {
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: 280px minmax(0, 1fr);
   height: calc(100vh - 136px);
   min-height: 560px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.conversation-sidebar {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid #dfe5ee;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.conversation-sidebar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.conversation-sidebar-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.conversation-sidebar-head p {
+  margin: 4px 0 0;
+  color: #637084;
+  font-size: 13px;
+}
+
+.conversation-sidebar-head button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: #2f6fda;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.conversation-picker {
+  display: grid;
+  gap: 6px;
+  color: #3b4658;
+  font-size: 13px;
+}
+
+.conversation-picker select {
+  width: 100%;
+  min-height: 38px;
+  min-width: 0;
+  border-radius: 6px;
+  border: 1px solid #cfd7e3;
+  background: #ffffff;
+  color: #1c2331;
+  font: inherit;
+  padding: 0 8px;
+}
+
+.conversation-current {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+}
+
+.conversation-empty {
+  padding: 12px;
+  border: 1px dashed #cfd7e3;
+  border-radius: 8px;
+  color: #637084;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.conversation-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.conversation-summary strong,
+.conversation-summary span,
+.conversation-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-summary span,
+.conversation-summary small {
+  color: #637084;
+  font-size: 12px;
+}
+
+.conversation-actions {
+  display: flex;
+}
+
+.conversation-delete {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #3b4658;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0 10px;
+}
+
+.conversation-delete:hover,
+.conversation-sidebar-head button:hover {
+  background: #275fc0;
+  color: #ffffff;
+}
+
+.conversation-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.chat-main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  padding: 18px;
 }
 
 .files-toolbar,
@@ -391,6 +529,11 @@ code {
 
 .upload-panel input {
   min-width: 0;
+}
+
+.upload-panel input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .file-table {
@@ -682,6 +825,62 @@ code {
   color: #b83232;
 }
 
+.chat-status {
+  margin: 0;
+  color: #5a6b82;
+  font-size: 13px;
+}
+
+.tool-stream {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-stream-item {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f3f6fb;
+  border: 1px solid #d7e0ec;
+}
+
+.tool-stream-item.running {
+  border-color: #9ec5ff;
+  background: #edf4ff;
+}
+
+.tool-stream-item.error {
+  border-color: #efb4b4;
+  background: #fff3f3;
+}
+
+.tool-stream-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.tool-duration {
+  color: #5a6b82;
+  font-size: 12px;
+}
+
+.tool-preview {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .chat-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -835,8 +1034,16 @@ code {
   }
 
   .chat-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
     height: calc(100vh - 120px);
     min-height: 520px;
+  }
+
+  .conversation-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #dfe5ee;
+    max-height: 220px;
   }
 
   .file-table {

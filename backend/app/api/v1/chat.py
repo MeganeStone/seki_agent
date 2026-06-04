@@ -1,14 +1,20 @@
-import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_agent_service, get_current_user
 from app.schemas.auth import UserRead
-from app.schemas.chat import ChatMessageCreate, ChatMessageRead, ChatMessageResponse, ConversationCreateResponse
+from app.schemas.chat import (
+    ChatMessageCreate,
+    ChatMessageRead,
+    ChatMessageResponse,
+    ConversationCreateResponse,
+    ConversationRead,
+)
 from app.services.agent_service import AgentService
+from app.services.agent_streaming import stream_event_to_sse
 
 
 router = APIRouter(prefix="/chat")
@@ -21,6 +27,27 @@ def create_conversation(
 ) -> ConversationCreateResponse:
     """创建一个归属于当前用户的新 Agent 对话。"""
     return agent_service.create_conversation(current_user.username)
+
+
+@router.get("/conversations", response_model=list[ConversationRead])
+def list_conversations(
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+    agent_service: Annotated[AgentService, Depends(get_agent_service)],
+    limit: int = 50,
+) -> list[ConversationRead]:
+    """列出当前用户的 Agent 会话，供前端侧栏恢复历史对话。"""
+    return agent_service.list_conversations(current_user.username, limit=limit)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_conversation(
+    conversation_id: str,
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+    agent_service: Annotated[AgentService, Depends(get_agent_service)],
+) -> Response:
+    """删除当前用户自己的会话及消息。"""
+    agent_service.delete_conversation(current_user.username, conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=ChatMessageResponse)
@@ -43,7 +70,7 @@ def create_message(
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")
-def create_message_stream(
+async def create_message_stream(
     conversation_id: str,
     payload: ChatMessageCreate,
     current_user: Annotated[UserRead, Depends(get_current_user)],
@@ -51,19 +78,18 @@ def create_message_stream(
 ) -> StreamingResponse:
     """SSE 流式消息接口。
 
-    当前实现是在 API 层把完整回答按字符切成 delta 事件，前端因此能看到增量
-    输出；后续要做真正 token 级流式，需要把 AgentRunner 协议扩展为原生 stream。
+    通过 LangGraph `astream_events` 推送 token delta、工具开始/结束/错误和最终
+    `final` 事件；前端可实时展示回答与工具执行状态。
     """
-    def event_stream() -> Iterator[str]:
-        response = agent_service.ask(
+
+    async def event_stream() -> AsyncIterator[str]:
+        async for event in agent_service.ask_stream(
             current_user.username,
             conversation_id,
             payload.message,
             use_knowledge_base=payload.use_knowledge_base,
-        )
-        for char in response.answer:
-            yield f"event: delta\ndata: {json.dumps({'text': char}, ensure_ascii=False)}\n\n"
-        yield f"event: final\ndata: {response.model_dump_json()}\n\n"
+        ):
+            yield stream_event_to_sse(event)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

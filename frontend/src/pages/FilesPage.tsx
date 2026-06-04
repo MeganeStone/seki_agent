@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { deleteFile, downloadFile, listFiles, uploadFile } from '../api/files'
 import type { WorkspaceFile } from '../types/files'
@@ -21,16 +21,17 @@ function formatDate(value: string): string {
 }
 
 function FilesPage({ accessToken }: FilesPageProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [files, setFiles] = useState<WorkspaceFile[]>([])
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  const canUpload = useMemo(() => Boolean(accessToken && selectedFile && !uploading), [
+  const canUpload = useMemo(() => Boolean(accessToken && selectedFiles.length > 0 && !uploading), [
     accessToken,
-    selectedFile,
+    selectedFiles.length,
     uploading,
   ])
 
@@ -76,21 +77,24 @@ function FilesPage({ accessToken }: FilesPageProps) {
   }, [accessToken])
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    setSelectedFile(event.target.files?.[0] ?? null)
+    setSelectedFiles(Array.from(event.target.files ?? []))
     setMessage('')
     setError('')
   }
 
   async function handleUpload() {
-    if (!accessToken || !selectedFile) return
+    if (!accessToken || selectedFiles.length === 0) return
 
     setUploading(true)
     setError('')
     setMessage('')
     try {
-      await uploadFile(accessToken, selectedFile)
-      setSelectedFile(null)
-      setMessage('上传完成')
+      for (const file of selectedFiles) {
+        await uploadFile(accessToken, file)
+      }
+      setSelectedFiles([])
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      setMessage(`上传完成：${selectedFiles.length} 个文件`)
       await refreshFiles()
     } catch (error) {
       setError(error instanceof Error ? error.message : '文件上传失败')
@@ -152,15 +156,15 @@ function FilesPage({ accessToken }: FilesPageProps) {
       </div>
 
       <div className="upload-panel">
-        <input type="file" onChange={handleFileChange} />
+        <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} disabled={uploading} />
         <button type="button" onClick={handleUpload} disabled={!canUpload}>
           {uploading ? '上传中' : '上传'}
         </button>
       </div>
 
-      {selectedFile && (
+      {selectedFiles.length > 0 && (
         <p className="file-hint">
-          待上传：{selectedFile.name}，{formatBytes(selectedFile.size)}
+          待上传：{selectedFiles.map((file) => `${file.name} (${formatBytes(file.size)})`).join('，')}
         </p>
       )}
       {message && <p className="form-message">{message}</p>}

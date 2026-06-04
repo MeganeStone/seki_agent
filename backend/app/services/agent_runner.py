@@ -1,7 +1,8 @@
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from typing import Any
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.core.api_keys import temporary_env_api_key
 from app.services.agent_tools import (
@@ -51,6 +52,21 @@ class AgentResponse:
     def __post_init__(self) -> None:
         if self.sources is None:
             object.__setattr__(self, "sources", [])
+
+
+StreamEventKind = Literal["delta", "tool_start", "tool_end", "tool_error", "status", "final"]
+
+
+@dataclass(frozen=True)
+class AgentStreamEvent:
+    kind: StreamEventKind
+    text: str | None = None
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    duration_ms: int | None = None
+    preview: str | None = None
+    error: str | None = None
+    response: AgentResponse | None = None
 
 
 class AgentRunner(Protocol):

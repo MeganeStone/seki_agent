@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from app.core.config import get_settings
 from app.services.agent_prompts import TBOX_AGENT_SYSTEM_PROMPT
 from app.services.agent_runner import ChatHistoryMessage
+from app.services.conversation_history import MAX_CONTEXT_MESSAGES, format_messages_for_summarization
 
 
 ChatModelCaller = Callable[[str, str | None], str]
@@ -51,12 +52,83 @@ class ChatModelService:
             timeout=300,
         )
         messages = [{"role": "system", "content": TBOX_AGENT_SYSTEM_PROMPT}]
-        for item in history[-20:]:
+        for item in history[-MAX_CONTEXT_MESSAGES:]:
             if item.role in {"user", "assistant"} and item.content.strip():
                 messages.append({"role": item.role, "content": item.content})
         messages.append({"role": "user", "content": clean_message})
         response = model.invoke(messages)
         return {"answer": _message_content(response), "sources": []}
+
+    def summarize_messages(
+        self,
+        messages: tuple[ChatHistoryMessage, ...],
+        previous_summary: str | None = None,
+        api_key: str | None = None,
+    ) -> str:
+        transcript = format_messages_for_summarization(messages)
+        if not transcript.strip() and previous_summary:
+            return previous_summary
+        if not transcript.strip():
+            return "No earlier conversation content."
+
+        if self.caller is not None:
+            prompt = _summarize_prompt(transcript, previous_summary)
+            return self.caller(prompt, api_key)
+
+        settings = get_settings()
+        effective_api_key = settings.rag_api_key or api_key
+        if not effective_api_key:
+            from app.services.conversation_history import _fallback_summarize
+
+            return _fallback_summarize(messages, previous_summary)
+
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError:
+            from app.services.conversation_history import _fallback_summarize
+
+            return _fallback_summarize(messages, previous_summary)
+
+        model = ChatOpenAI(
+            model=settings.rag_model_name,
+            temperature=0,
+            api_key=effective_api_key,
+            base_url=settings.rag_base_url,
+            timeout=120,
+        )
+        response = model.invoke(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You compress prior chat history into a concise Chinese summary for the model context. "
+                        "Preserve user goals, decisions, file names, task ids, tool outcomes, and open questions. "
+                        "Do not invent facts."
+                    ),
+                },
+                {"role": "user", "content": _summarize_prompt(transcript, previous_summary)},
+            ]
+        )
+        return _message_content(response).strip() or _fallback_summarize(messages, previous_summary)
+
+
+def _summarize_prompt(transcript: str, previous_summary: str | None) -> str:
+    if previous_summary:
+        return (
+            "Update the existing summary with the new messages below.\n\n"
+            f"Existing summary:\n{previous_summary}\n\n"
+            f"New messages:\n{transcript}"
+        )
+    return f"Summarize the conversation messages below:\n\n{transcript}"
+
+
+def _fallback_summarize(
+    messages: tuple[ChatHistoryMessage, ...],
+    previous_summary: str | None,
+) -> str:
+    from app.services.conversation_history import _fallback_summarize as inner
+
+    return inner(messages, previous_summary)
 
 
 def _message_content(message: object) -> str:

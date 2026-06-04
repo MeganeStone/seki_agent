@@ -37,8 +37,9 @@ def get_task_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)
 
 def get_code_operation_service(
     conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    file_service: Annotated[FileService, Depends(get_file_service)],
 ) -> CodeOperationService:
-    return CodeOperationService(conn)
+    return CodeOperationService(conn, file_service=file_service)
 
 
 def get_task_executor(request: Request) -> TaskExecutor:

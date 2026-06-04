@@ -32,6 +32,10 @@ class ChatRepository:
             self.conn.execute(
                 "ALTER TABLE conversations ADD COLUMN active_agent TEXT NOT NULL DEFAULT 'main_agent'"
             )
+        if "agent_summaries" not in columns:
+            self.conn.execute(
+                "ALTER TABLE conversations ADD COLUMN agent_summaries TEXT NOT NULL DEFAULT '{}'"
+            )
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -85,12 +89,113 @@ class ChatRepository:
             raise RuntimeError("Failed to create conversation")
         return row
 
+    def list_conversations(self, owner_username: str, limit: int = 50) -> list[sqlite3.Row]:
+        cursor = self.conn.execute(
+            """
+            SELECT
+                c.id,
+                c.owner_username,
+                c.active_agent,
+                c.created_at,
+                COALESCE(MAX(m.created_at), c.created_at) AS updated_at,
+                COUNT(m.id) AS message_count,
+                (
+                    SELECT m2.content
+                    FROM chat_messages AS m2
+                    WHERE m2.conversation_id = c.id
+                      AND m2.owner_username = c.owner_username
+                      AND m2.role = 'user'
+                    ORDER BY m2.created_at ASC
+                    LIMIT 1
+                ) AS title
+            FROM conversations AS c
+            LEFT JOIN chat_messages AS m
+              ON m.conversation_id = c.id
+             AND m.owner_username = c.owner_username
+            WHERE c.owner_username = ?
+            GROUP BY c.id, c.owner_username, c.active_agent, c.created_at
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (owner_username, max(1, min(limit, 200))),
+        )
+        return list(cursor.fetchall())
+
     def get_conversation(self, conversation_id: str, owner_username: str) -> sqlite3.Row | None:
         cursor = self.conn.execute(
-            "SELECT id, owner_username, active_agent, created_at FROM conversations WHERE id = ? AND owner_username = ?",
+            """
+            SELECT id, owner_username, active_agent, agent_summaries, created_at
+            FROM conversations
+            WHERE id = ? AND owner_username = ?
+            """,
             (conversation_id, owner_username),
         )
         return cursor.fetchone()
+
+    def delete_conversation(self, conversation_id: str, owner_username: str) -> bool:
+        conversation = self.get_conversation(conversation_id, owner_username)
+        if conversation is None:
+            return False
+
+        self.conn.execute(
+            "DELETE FROM chat_messages WHERE conversation_id = ? AND owner_username = ?",
+            (conversation_id, owner_username),
+        )
+        if self._table_exists("code_pending_operations"):
+            self.conn.execute(
+                "DELETE FROM code_pending_operations WHERE conversation_id = ? AND owner_username = ?",
+                (conversation_id, owner_username),
+            )
+        self.conn.execute(
+            "DELETE FROM conversations WHERE id = ? AND owner_username = ?",
+            (conversation_id, owner_username),
+        )
+        self.conn.commit()
+        return True
+
+    def _table_exists(self, table_name: str) -> bool:
+        cursor = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return cursor.fetchone() is not None
+
+    def update_agent_summaries(
+        self,
+        conversation_id: str,
+        owner_username: str,
+        summaries: dict[str, dict[str, object]],
+    ) -> None:
+        payload = json.dumps(summaries, ensure_ascii=False, separators=(",", ":"))
+        self.conn.execute(
+            """
+            UPDATE conversations
+            SET agent_summaries = ?
+            WHERE id = ? AND owner_username = ?
+            """,
+            (payload, conversation_id, owner_username),
+        )
+        self.conn.commit()
+
+    def count_messages(
+        self,
+        conversation_id: str,
+        owner_username: str,
+        *,
+        agent_name: str | None = None,
+    ) -> int:
+        query = """
+            SELECT COUNT(*) AS total
+            FROM chat_messages
+            WHERE conversation_id = ? AND owner_username = ?
+        """
+        params: list[object] = [conversation_id, owner_username]
+        if agent_name is not None:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+        cursor = self.conn.execute(query, params)
+        row = cursor.fetchone()
+        return int(row["total"] if row else 0)
 
     def update_active_agent(self, conversation_id: str, owner_username: str, active_agent: str) -> None:
         self.conn.execute(
@@ -147,7 +252,7 @@ class ChatRepository:
             query += f" AND role NOT IN ({placeholders})"
             params.extend(exclude_roles)
         query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(max(1, min(limit, 100)))
+        params.append(max(1, min(limit, 500)))
         cursor = self.conn.execute(query, params)
         rows = list(cursor.fetchall())
         return list(reversed(rows))

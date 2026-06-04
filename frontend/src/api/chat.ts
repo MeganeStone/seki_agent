@@ -3,6 +3,7 @@ import type {
   ChatMessageRead,
   ChatMessageResponse,
   ConversationCreateResponse,
+  ConversationRead,
   SendChatMessagePayload,
 } from '../types/chat'
 
@@ -37,6 +38,29 @@ export async function createConversation(accessToken: string): Promise<Conversat
   }
 
   return response.json()
+}
+
+export async function listConversations(accessToken: string): Promise<ConversationRead[]> {
+  const response = await fetch(`${API_BASE_URL}/chat/conversations`, {
+    headers: authHeaders(accessToken),
+  })
+
+  if (!response.ok) {
+    throw await parseError(response, '会话列表获取失败')
+  }
+
+  return response.json()
+}
+
+export async function deleteConversation(accessToken: string, conversationId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/chat/conversations/${conversationId}`, {
+    method: 'DELETE',
+    headers: authHeaders(accessToken),
+  })
+
+  if (!response.ok) {
+    throw await parseError(response, '会话删除失败')
+  }
 }
 
 export async function sendChatMessage(
@@ -75,6 +99,20 @@ export async function listChatMessages(
 type StreamHandlers = {
   onDelta: (text: string) => void
   onFinal: (response: ChatMessageResponse) => void
+  onStatus?: (text: string) => void
+  onToolStart?: (payload: { toolName: string; toolCallId: string | null }) => void
+  onToolEnd?: (payload: {
+    toolName: string
+    toolCallId: string | null
+    durationMs?: number
+    preview?: string
+  }) => void
+  onToolError?: (payload: {
+    toolName: string
+    toolCallId: string | null
+    durationMs?: number
+    error: string
+  }) => void
 }
 
 export async function streamChatMessage(
@@ -115,6 +153,41 @@ export async function streamChatMessage(
       if (event.event === 'delta') {
         const payload = JSON.parse(event.data) as { text?: string }
         if (payload.text) handlers.onDelta(payload.text)
+      } else if (event.event === 'status') {
+        const payload = JSON.parse(event.data) as { text?: string }
+        if (payload.text) handlers.onStatus?.(payload.text)
+      } else if (event.event === 'tool_start') {
+        const payload = JSON.parse(event.data) as { tool_name?: string; tool_call_id?: string | null }
+        handlers.onToolStart?.({
+          toolName: payload.tool_name ?? 'tool',
+          toolCallId: payload.tool_call_id ?? null,
+        })
+      } else if (event.event === 'tool_end') {
+        const payload = JSON.parse(event.data) as {
+          tool_name?: string
+          tool_call_id?: string | null
+          duration_ms?: number
+          preview?: string
+        }
+        handlers.onToolEnd?.({
+          toolName: payload.tool_name ?? 'tool',
+          toolCallId: payload.tool_call_id ?? null,
+          durationMs: payload.duration_ms,
+          preview: payload.preview,
+        })
+      } else if (event.event === 'tool_error') {
+        const payload = JSON.parse(event.data) as {
+          tool_name?: string
+          tool_call_id?: string | null
+          duration_ms?: number
+          error?: string
+        }
+        handlers.onToolError?.({
+          toolName: payload.tool_name ?? 'tool',
+          toolCallId: payload.tool_call_id ?? null,
+          durationMs: payload.duration_ms,
+          error: payload.error ?? 'tool failed',
+        })
       } else if (event.event === 'final') {
         handlers.onFinal(JSON.parse(event.data) as ChatMessageResponse)
       }

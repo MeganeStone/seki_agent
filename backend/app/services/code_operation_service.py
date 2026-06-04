@@ -10,6 +10,7 @@ from app.repositories.code_operation_repository import CodeOperationRepository
 from app.schemas.code_operations import CodeOperationRead, CodeOperationResult
 from app.services.code_agent_tools import CodeAgentFileTool
 from app.services.code_execution_service import CodeExecutionResult
+from app.services.file_service import FileService
 
 
 class CodeOperationService:
@@ -23,6 +24,7 @@ class CodeOperationService:
         self,
         conn: sqlite3.Connection,
         file_tool: CodeAgentFileTool | None = None,
+        file_service: FileService | None = None,
         pending_ttl_minutes: int = 60,
     ):
         self.conn = conn
@@ -31,6 +33,7 @@ class CodeOperationService:
         self.chats = ChatRepository(conn)
         self.chats.initialize()
         self.file_tool = file_tool
+        self.file_service = file_service
         self.pending_ttl_minutes = pending_ttl_minutes
 
     def create_pending_from_result(
@@ -137,12 +140,12 @@ class CodeOperationService:
         return self._to_read(updated)
 
     def _execute_confirmed(self, row: sqlite3.Row) -> CodeExecutionResult:
-        tool = self._get_file_tool()
         payload = self._loads(row["payload_json"])
         operation_type = row["operation_type"]
         owner_username = row["owner_username"]
         conversation_id = row["conversation_id"]
         agent_name = row["agent_name"]
+        tool = self._get_file_tool(owner_username)
         if operation_type == "delete_path":
             return tool.delete_path(
                 path=str(payload.get("path") or ""),
@@ -168,12 +171,35 @@ class CodeOperationService:
             data={"operation_type": operation_type},
         )
 
-    def _get_file_tool(self) -> CodeAgentFileTool:
+    def _get_file_tool(self, owner_username: str) -> CodeAgentFileTool:
         if isinstance(self.file_tool, CodeAgentFileTool):
             return self.file_tool
+        import re
+
+        from app.core.config import get_settings
         from app.services.code_execution_service import CodeExecutionService
 
-        self.file_tool = CodeAgentFileTool(CodeExecutionService())
+        settings = get_settings()
+        safe_owner = re.sub(r"[^a-zA-Z0-9_-]", "_", owner_username.strip()) or "anonymous"
+        user_workspace = (settings.workspace_dir / safe_owner).resolve()
+        user_workspace.mkdir(parents=True, exist_ok=True)
+        allowed_roots = settings.code_agent_allowed_roots or [
+            user_workspace,
+            settings.project_root,
+            settings.skills_dir,
+        ]
+        self.file_tool = CodeAgentFileTool(
+            CodeExecutionService(
+                allowed_roots=allowed_roots,
+                default_root=user_workspace,
+                writable_roots=[user_workspace],
+                after_delete_path=(
+                    lambda owner, _path: self.file_service.sync_workspace_files(owner)
+                )
+                if self.file_service
+                else None,
+            )
+        )
         return self.file_tool
 
     @staticmethod

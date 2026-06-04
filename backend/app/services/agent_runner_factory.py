@@ -48,7 +48,9 @@ def create_default_agent_runner(
             ),
             code_agent_graph=create_code_langgraph_agent(
                 settings=settings.model_copy(update={"rag_api_key": settings.rag_api_key or request.api_key}),
-                code_file_tool=CodeAgentFileTool(_create_code_execution_service(request.owner_username)),
+                code_file_tool=CodeAgentFileTool(
+                    _create_code_execution_service(request.owner_username, file_service=file_service)
+                ),
                 owner_username=request.owner_username,
                 conversation_id=request.conversation_id,
                 operation_service=code_operation_service,
@@ -58,7 +60,10 @@ def create_default_agent_runner(
     return langgraph_runner
 
 
-def _create_code_execution_service(owner_username: str) -> CodeExecutionService:
+def _create_code_execution_service(
+    owner_username: str,
+    file_service: FileService | None = None,
+) -> CodeExecutionService:
     settings = get_settings()
     safe_owner = re.sub(r"[^a-zA-Z0-9_-]", "_", owner_username.strip()) or "anonymous"
     user_workspace = (settings.workspace_dir / safe_owner).resolve()
@@ -72,6 +77,7 @@ def _create_code_execution_service(owner_username: str) -> CodeExecutionService:
         allowed_roots=allowed_roots,
         default_root=user_workspace,
         writable_roots=[user_workspace],
+        after_delete_path=(lambda owner, _path: file_service.sync_workspace_files(owner)) if file_service else None,
     )
 
 

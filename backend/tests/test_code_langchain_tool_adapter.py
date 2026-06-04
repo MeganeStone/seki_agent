@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app.db.sqlite import connect
 from app.repositories.chat_repository import ChatRepository
+from app.services.file_service import FileService
 from app.services.code_agent_tools import CodeAgentFileTool
 from app.services.code_execution_service import CodeExecutionService
 from app.services.code_langchain_tool_adapter import create_code_langchain_tools
@@ -112,6 +113,43 @@ def test_code_tool_deletes_existing_workspace_file_without_pending_operation(tmp
         assert "status=succeeded" in result
         assert operations == []
         assert not (root / "existing.txt").exists()
+    finally:
+        conn.close()
+
+
+def test_code_tool_delete_syncs_file_table_for_workspace_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    owner_dir = workspace / "alice"
+    owner_dir.mkdir(parents=True)
+    conn = connect(tmp_path / "test.db")
+    try:
+        chats = ChatRepository(conn)
+        chats.initialize()
+        chats.create_conversation("conv-1", "alice")
+        file_service = FileService(conn, workspace_dir=workspace)
+        file_service.save_generated_content("alice", "existing.txt", b"keep")
+        assert [file.filename for file in file_service.list_files("alice")] == ["existing.txt"]
+        stored_path = next(owner_dir.iterdir())
+
+        service = CodeExecutionService(
+            allowed_roots=[owner_dir],
+            default_root=owner_dir,
+            writable_roots=[owner_dir],
+            after_delete_path=lambda owner, _path: file_service.sync_workspace_files(owner),
+        )
+        operation_service = CodeOperationService(conn)
+        tools = create_code_langchain_tools(
+            file_tool=CodeAgentFileTool(service),
+            owner_username="alice",
+            conversation_id="conv-1",
+            operation_service=operation_service,
+        )
+        by_name = {tool.name: tool for tool in tools}
+
+        result = by_name["code_delete_path"].invoke({"path": stored_path.name, "recursive": False})
+
+        assert "status=succeeded" in result
+        assert file_service.list_files("alice") == []
     finally:
         conn.close()
 

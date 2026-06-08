@@ -145,7 +145,12 @@ class FileService:
     def _remove_missing_workspace_records(self, owner_username: str) -> None:
         for row in self.files.list_for_owner(owner_username):
             path = Path(row["storage_path"])
-            self._ensure_under_workspace(path)
+            try:
+                self._ensure_under_workspace(path)
+            except HTTPException:
+                # Path is from another machine/environment; treat as orphaned
+                self.files.delete_by_storage_path(owner_username, row["storage_path"])
+                continue
             if path.exists() and path.is_file():
                 continue
             self.files.delete_by_storage_path(owner_username, row["storage_path"])

@@ -17,7 +17,7 @@
 - 新框架后端：`backend/`，FastAPI 模块化单体。
 - 新框架前端：`frontend/`，React + Vite + TypeScript。
 - 工程化文档：`docs/`。
-- 旧 Streamlit/LangGraph 原型与参考依赖已集中到 `old/`。
+- 旧 Streamlit/LangGraph 原型源码保留在 `old/`（仅 `src/` 与 `parse_spi/`，旧数据与依赖快照已清理）。
 - 新后端仍需复用的旧能力运行时文件已复制并收敛到 `backend/legacy/`。
 - 运行数据默认位于 `data/`，不作为源码资产保留。
 - 部署方式：Docker Compose。

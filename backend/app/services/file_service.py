@@ -1,5 +1,5 @@
 import re
-import sqlite3
+import psycopg
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,7 +19,7 @@ class FileService:
     下载、删除都会再次校验 owner 和真实路径，防止用户通过 file_id 或路径越权。
     """
 
-    def __init__(self, conn: sqlite3.Connection, workspace_dir: Path | None = None, max_upload_size_bytes: int | None = None):
+    def __init__(self, conn: psycopg.Connection, workspace_dir: Path | None = None, max_upload_size_bytes: int | None = None):
         settings = get_settings()
         self.files = FileRepository(conn)
         self.files.initialize()
@@ -169,7 +169,7 @@ class FileService:
         return name or "uploaded-file"
 
     @staticmethod
-    def _to_schema(row: sqlite3.Row) -> FileRead:
+    def _to_schema(row: dict) -> FileRead:
         return FileRead(
             id=row["id"],
             filename=row["filename"],

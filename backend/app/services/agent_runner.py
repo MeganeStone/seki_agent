@@ -54,7 +54,7 @@ class AgentResponse:
             object.__setattr__(self, "sources", [])
 
 
-StreamEventKind = Literal["delta", "tool_start", "tool_end", "tool_error", "status", "final"]
+StreamEventKind = Literal["delta", "tool_start", "tool_end", "tool_error", "status", "usage", "final"]
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,10 @@ class AgentStreamEvent:
     preview: str | None = None
     error: str | None = None
     response: AgentResponse | None = None
+    # usage 事件：单次模型调用的 token 用量。
+    model_name: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class AgentRunner(Protocol):

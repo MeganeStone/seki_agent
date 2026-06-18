@@ -63,6 +63,7 @@
 - `spi_repository.py`：SPI 任务表读写。
 - `diff_repository.py`：差分任务表读写。
 - `code_operation_repository.py`：code pending operation 表读写。
+- `code_audit_repository.py`：code agent 操作审计表读写。
 
 ### backend/app/services
 
@@ -90,11 +91,12 @@
 - `code_agent_tools.py`：code agent 的工具适配。
 - `code_langchain_tool_adapter.py`：把 code agent 工具包装为 LangChain tool。
 - `code_agent_factory.py`：创建 code agent graph。
-- `code_operation_service.py`：pending operation 业务逻辑。
+- `code_operation_service.py`：pending operation 业务逻辑和审计查询。
+- `code_audit_service.py`：默认审计 sink（独立短连接落库）和审计行转换。
 
 ### backend/db
 
-- `sqlite.py`：SQLite 连接创建和 row factory 设置。
+- `postgres.py`：PostgreSQL 连接创建、请求级连接依赖和 dict row 设置。
 
 ### backend/scripts
 
@@ -138,6 +140,8 @@
 
 - `LoginPage.tsx`：登录页。
 - `ChatPage.tsx`：Agent 对话页，支持历史恢复、流式显示、工具结果和 pending operation。
+- `AdminUsersPage.tsx`：管理员用户管理页。
+- `TracePage.tsx`：Agent 自建追踪查看页。
 - `FilesPage.tsx`：文件管理页。
 - `TranslationPage.tsx`：文档翻译页。
 - `SpiPage.tsx`：SPI 解析页。
@@ -157,8 +161,24 @@
 - `backend/tests/`：后端单元测试和 API 测试。
 - live LangGraph 测试默认跳过，需要显式环境变量和真实 API key。
 
+## data
+
+运行数据目录，不作为源码资产；Docker Compose 将其整体挂载到容器 `/app/data`：
+
+- `workspace/{username}/`：各用户文件工作区。
+- `diff_work/`、`spi_work/`、`translation_work/`：各任务类型的工作目录。
+- `tbox_docs/`：RAG 知识库源文档（本地维护者管理）。
+- `parent_store/`：RAG 父文档存储。
+- `tbox_vector_db/`：Chroma 向量库。
+
+PostgreSQL 数据不再是 `data/db/*.db` 文件；Docker Compose 默认使用
+`postgres_data` volume 保存数据库。`data/` 仍保存用户文件、任务工作目录和
+legacy RAG 运行数据。
+
 ## old
 
-- `old/src/`：重构前 Streamlit/LangGraph/LangChain 原型源码。
-- `old/...` 其他目录：重构前数据、向量库、模板和依赖快照。
-- 当前运行时不直接依赖 `old/`，但它是迁移差距分析的重要参考。
+- `old/src/`：重构前 Streamlit/LangGraph/LangChain 原型源码，保留作迁移对照。
+- `old/parse_spi/`：旧 SPI 解析的多套 settings 变体和模板（backend/legacy 只收敛了当前在用的一套）。
+- 旧 workspace 数据、空 translate 目录、requirements 快照、旧 `.env`、旧用户库已删除；
+  RAG 知识库数据（tbox_docs/parent_store/tbox_vector_db）已迁移到 `data/`。
+- 当前运行时不直接依赖 `old/`。

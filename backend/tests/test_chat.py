@@ -1,11 +1,11 @@
-import sqlite3
+import psycopg
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_agent_service, get_auth_service
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.services.agent_service import AgentService
 from app.services.agent_runner import AgentRequest, AgentResponse, AgentStreamEvent
@@ -14,8 +14,8 @@ from app.services.rag_service import RagService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
@@ -23,7 +23,7 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection) -> TestClient:
+def client(test_db: psycopg.Connection) -> TestClient:
     app = create_app()
 
     class FakeRunner:
@@ -60,14 +60,14 @@ def client(test_db: sqlite3.Connection) -> TestClient:
     return TestClient(app)
 
 
-def auth_headers(client: TestClient, test_db: sqlite3.Connection, username: str = "alice") -> dict[str, str]:
+def auth_headers(client: TestClient, test_db: psycopg.Connection, username: str = "alice") -> dict[str, str]:
     AuthService(test_db).create_user(username, "secret")
     response = client.post("/api/v1/auth/login", json={"username": username, "password": "secret"})
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_create_conversation_and_send_message(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_create_conversation_and_send_message(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
 
     conv_response = client.post("/api/v1/chat/conversations", headers=headers)
@@ -92,7 +92,8 @@ def test_create_conversation_and_send_message(client: TestClient, test_db: sqlit
         }
     ]
     assert body["route"] == "rag"
-    assert body["data"] == {
+    business_data = {key: value for key, value in body["data"].items() if key != "token_usage"}
+    assert business_data == {
         "sources": [
             {
                 "file_name": "manual.pdf",
@@ -101,9 +102,10 @@ def test_create_conversation_and_send_message(client: TestClient, test_db: sqlit
             }
         ]
     }
+    assert body["data"]["token_usage"]["conversation_total_tokens"] == 0
 
 
-def test_stream_chat_message_emits_tool_events(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_stream_chat_message_emits_tool_events(client: TestClient, test_db: psycopg.Connection) -> None:
     app = create_app()
 
     class StreamingRunner:
@@ -151,7 +153,7 @@ def test_stream_chat_message_emits_tool_events(client: TestClient, test_db: sqli
     assert "event: final" in body
 
 
-def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     conv_response = client.post("/api/v1/chat/conversations", headers=headers)
     conversation_id = conv_response.json()["conversation_id"]
@@ -171,7 +173,7 @@ def test_stream_chat_message_returns_delta_and_final_events(client: TestClient, 
     assert "answer for:" in body
 
 
-def test_chat_conversations_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_chat_conversations_are_isolated_by_user(client: TestClient, test_db: psycopg.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
     conv_response = client.post("/api/v1/chat/conversations", headers=alice_headers)
@@ -192,7 +194,7 @@ def test_chat_requires_authentication(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_chat_rejects_empty_message(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_chat_rejects_empty_message(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     conv_response = client.post("/api/v1/chat/conversations", headers=headers)
     conversation_id = conv_response.json()["conversation_id"]
@@ -206,7 +208,7 @@ def test_chat_rejects_empty_message(client: TestClient, test_db: sqlite3.Connect
     assert response.status_code == 422
 
 
-def test_list_chat_messages_returns_persisted_history(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_list_chat_messages_returns_persisted_history(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     conv_response = client.post("/api/v1/chat/conversations", headers=headers)
     conversation_id = conv_response.json()["conversation_id"]
@@ -226,7 +228,7 @@ def test_list_chat_messages_returns_persisted_history(client: TestClient, test_d
     ]
 
 
-def test_list_conversations_returns_current_user_history(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_list_conversations_returns_current_user_history(client: TestClient, test_db: psycopg.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
     first = client.post("/api/v1/chat/conversations", headers=alice_headers).json()["conversation_id"]
@@ -260,7 +262,7 @@ def test_list_conversations_returns_current_user_history(client: TestClient, tes
 
 def test_delete_conversation_removes_messages_and_keeps_user_isolation(
     client: TestClient,
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
 ) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
@@ -284,7 +286,7 @@ def test_delete_conversation_removes_messages_and_keeps_user_isolation(
     assert list_response.json() == []
 
 
-def test_chat_ignores_request_api_key_fields(test_db: sqlite3.Connection) -> None:
+def test_chat_ignores_request_api_key_fields(test_db: psycopg.Connection) -> None:
     app = create_app()
     seen_requests: list[AgentRequest] = []
 
@@ -316,7 +318,7 @@ def test_chat_ignores_request_api_key_fields(test_db: sqlite3.Connection) -> Non
     assert seen_requests[0].api_key is None
 
 
-def test_chat_ignores_request_web_search_api_key_fields(test_db: sqlite3.Connection) -> None:
+def test_chat_ignores_request_web_search_api_key_fields(test_db: psycopg.Connection) -> None:
     app = create_app()
     seen_requests: list[AgentRequest] = []
 

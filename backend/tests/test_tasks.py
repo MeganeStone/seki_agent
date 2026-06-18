@@ -1,11 +1,11 @@
-import sqlite3
+import psycopg
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_auth_service, get_task_service
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.repositories.diff_repository import DiffRepository
 from app.repositories.spi_repository import SpiRepository
@@ -15,8 +15,8 @@ from app.services.task_service import TaskService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
@@ -24,7 +24,7 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection) -> TestClient:
+def client(test_db: psycopg.Connection) -> TestClient:
     app = create_app()
 
     def override_auth_service() -> AuthService:
@@ -38,14 +38,14 @@ def client(test_db: sqlite3.Connection) -> TestClient:
     return TestClient(app)
 
 
-def auth_headers(client: TestClient, test_db: sqlite3.Connection, username: str = "alice") -> dict[str, str]:
+def auth_headers(client: TestClient, test_db: psycopg.Connection, username: str = "alice") -> dict[str, str]:
     AuthService(test_db).create_user(username, "secret")
     response = client.post("/api/v1/auth/login", json={"username": username, "password": "secret"})
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
-def seed_tasks(conn: sqlite3.Connection, owner_username: str = "alice") -> dict[str, str]:
+def seed_tasks(conn: psycopg.Connection, owner_username: str = "alice") -> dict[str, str]:
     translations = TranslationRepository(conn)
     spi = SpiRepository(conn)
     diff = DiffRepository(conn)
@@ -68,7 +68,7 @@ def seed_tasks(conn: sqlite3.Connection, owner_username: str = "alice") -> dict[
 
 def test_list_tasks_returns_all_task_types_for_current_user(
     client: TestClient,
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
 ) -> None:
     headers = auth_headers(client, test_db)
     seed_tasks(test_db)
@@ -81,7 +81,7 @@ def test_list_tasks_returns_all_task_types_for_current_user(
     assert {item["task_id"] for item in items} == {"translation-1", "spi-1", "diff-1"}
 
 
-def test_list_tasks_is_limited(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_list_tasks_is_limited(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     seed_tasks(test_db)
 
@@ -91,7 +91,7 @@ def test_list_tasks_is_limited(client: TestClient, test_db: sqlite3.Connection) 
     assert len(response.json()["items"]) == 2
 
 
-def test_get_task_returns_unified_task_shape(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_get_task_returns_unified_task_shape(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     task_ids = seed_tasks(test_db)
 
@@ -106,7 +106,7 @@ def test_get_task_returns_unified_task_shape(client: TestClient, test_db: sqlite
     assert body["error"] is None
 
 
-def test_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_tasks_are_isolated_by_user(client: TestClient, test_db: psycopg.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
     seed_tasks(test_db, "alice")
@@ -121,7 +121,7 @@ def test_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connect
     assert alice_get.status_code == 200
 
 
-def test_cancel_task_updates_pending_task(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_cancel_task_updates_pending_task(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     task_ids = seed_tasks(test_db)
     TranslationRepository(test_db).update_result(task_ids["translation"], "alice", status="pending")
@@ -134,7 +134,7 @@ def test_cancel_task_updates_pending_task(client: TestClient, test_db: sqlite3.C
     assert body["status"] == "cancelled"
 
 
-def test_cancel_task_keeps_finished_task_status(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_cancel_task_keeps_finished_task_status(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     task_ids = seed_tasks(test_db)
 
@@ -144,7 +144,7 @@ def test_cancel_task_keeps_finished_task_status(client: TestClient, test_db: sql
     assert response.json()["status"] == "succeeded"
 
 
-def test_cancel_task_is_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_cancel_task_is_isolated_by_user(client: TestClient, test_db: psycopg.Connection) -> None:
     bob_headers = auth_headers(client, test_db, "bob")
     task_ids = seed_tasks(test_db, "alice")
 

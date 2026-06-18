@@ -1,13 +1,14 @@
 import json
-import sqlite3
+import psycopg
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 
 from app.repositories.chat_repository import ChatRepository
+from app.repositories.code_audit_repository import CodeAuditRepository
 from app.repositories.code_operation_repository import CodeOperationRepository
-from app.schemas.code_operations import CodeOperationRead, CodeOperationResult
+from app.schemas.code_operations import CodeAuditRead, CodeOperationRead, CodeOperationResult
 from app.services.code_agent_tools import CodeAgentFileTool
 from app.services.code_execution_service import CodeExecutionResult
 from app.services.file_service import FileService
@@ -22,7 +23,7 @@ class CodeOperationService:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         file_tool: CodeAgentFileTool | None = None,
         file_service: FileService | None = None,
         pending_ttl_minutes: int = 60,
@@ -30,6 +31,8 @@ class CodeOperationService:
         self.conn = conn
         self.operations = CodeOperationRepository(conn)
         self.operations.initialize()
+        self.audits = CodeAuditRepository(conn)
+        self.audits.initialize()
         self.chats = ChatRepository(conn)
         self.chats.initialize()
         self.file_tool = file_tool
@@ -70,6 +73,18 @@ class CodeOperationService:
     ) -> list[CodeOperationRead]:
         rows = self.operations.list_for_owner(owner_username, conversation_id, operation_status, limit)
         return [self._to_read(row) for row in rows]
+
+    def list_audit_records(
+        self,
+        owner_username: str,
+        conversation_id: str | None = None,
+        limit: int = 50,
+    ) -> list[CodeAuditRead]:
+        """按当前用户查询 code agent 操作审计记录。"""
+        from app.services.code_audit_service import audit_row_to_read
+
+        rows = self.audits.list_for_owner(owner_username, conversation_id, limit)
+        return [audit_row_to_read(row) for row in rows]
 
     def get_operation(self, owner_username: str, operation_id: str) -> CodeOperationRead:
         row = self.operations.get_for_owner(operation_id, owner_username)
@@ -139,7 +154,7 @@ class CodeOperationService:
         )
         return self._to_read(updated)
 
-    def _execute_confirmed(self, row: sqlite3.Row) -> CodeExecutionResult:
+    def _execute_confirmed(self, row: dict) -> CodeExecutionResult:
         payload = self._loads(row["payload_json"])
         operation_type = row["operation_type"]
         owner_username = row["owner_username"]
@@ -150,6 +165,16 @@ class CodeOperationService:
             return tool.delete_path(
                 path=str(payload.get("path") or ""),
                 recursive=bool(payload.get("recursive", False)),
+                owner_username=owner_username,
+                conversation_id=conversation_id,
+                agent_name=agent_name,
+                confirmed=True,
+            )
+        if operation_type == "write_text_file":
+            return tool.write_text_file(
+                path=str(payload.get("path") or ""),
+                content=str(payload.get("content") or ""),
+                overwrite=bool(payload.get("overwrite", True)),
                 owner_username=owner_username,
                 conversation_id=conversation_id,
                 agent_name=agent_name,
@@ -177,6 +202,7 @@ class CodeOperationService:
         import re
 
         from app.core.config import get_settings
+        from app.services.code_audit_service import create_default_audit_sink
         from app.services.code_execution_service import CodeExecutionService
 
         settings = get_settings()
@@ -198,12 +224,13 @@ class CodeOperationService:
                 )
                 if self.file_service
                 else None,
+                audit_sink=create_default_audit_sink(),
             )
         )
         return self.file_tool
 
     @staticmethod
-    def _to_read(row: sqlite3.Row) -> CodeOperationRead:
+    def _to_read(row: dict) -> CodeOperationRead:
         return CodeOperationRead(
             operation_id=row["id"],
             conversation_id=row["conversation_id"],

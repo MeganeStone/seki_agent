@@ -15,9 +15,33 @@ function authHeaders(accessToken: string): HeadersInit {
   }
 }
 
+export type TokenLimitInfo = {
+  total_tokens: number
+  current_limit: number
+  base_limit: number
+  multiplier: number
+}
+
+export class TokenLimitReachedError extends Error {
+  info: TokenLimitInfo
+
+  constructor(info: TokenLimitInfo) {
+    super('token limit reached')
+    this.info = info
+  }
+}
+
 async function parseError(response: Response, fallback: string): Promise<Error> {
   try {
     const payload = await response.json()
+    if (
+      response.status === 409 &&
+      payload?.detail &&
+      typeof payload.detail === 'object' &&
+      payload.detail.code === 'token_limit_reached'
+    ) {
+      return new TokenLimitReachedError(payload.detail as TokenLimitInfo)
+    }
     if (typeof payload?.detail === 'string') return new Error(payload.detail)
     if (typeof payload?.message === 'string') return new Error(payload.message)
   } catch {
@@ -25,6 +49,23 @@ async function parseError(response: Response, fallback: string): Promise<Error> 
   }
 
   return new Error(fallback)
+}
+
+export async function extendTokenLimit(
+  accessToken: string,
+  conversationId: string,
+): Promise<TokenLimitInfo & { conversation_id: string }> {
+  const response = await fetch(
+    `${API_BASE_URL}/chat/conversations/${conversationId}/token-limit/extend`,
+    {
+      method: 'POST',
+      headers: authHeaders(accessToken),
+    },
+  )
+  if (!response.ok) {
+    throw await parseError(response, '提升 token 限额失败')
+  }
+  return response.json()
 }
 
 export async function createConversation(accessToken: string): Promise<ConversationCreateResponse> {
@@ -113,6 +154,7 @@ type StreamHandlers = {
     durationMs?: number
     error: string
   }) => void
+  onUsage?: (payload: { modelName: string; inputTokens: number; outputTokens: number }) => void
 }
 
 export async function streamChatMessage(
@@ -120,6 +162,7 @@ export async function streamChatMessage(
   conversationId: string,
   payload: SendChatMessagePayload,
   handlers: StreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
   // 浏览器 fetch 没有直接暴露 EventSource 风格的 POST SSE，所以这里手动读取
   // ReadableStream 并解析 `event:` / `data:` 块。
@@ -127,6 +170,7 @@ export async function streamChatMessage(
     method: 'POST',
     headers: authHeaders(accessToken),
     body: JSON.stringify(payload),
+    signal,
   })
 
   if (!response.ok) {
@@ -187,6 +231,17 @@ export async function streamChatMessage(
           toolCallId: payload.tool_call_id ?? null,
           durationMs: payload.duration_ms,
           error: payload.error ?? 'tool failed',
+        })
+      } else if (event.event === 'usage') {
+        const payload = JSON.parse(event.data) as {
+          model_name?: string
+          input_tokens?: number
+          output_tokens?: number
+        }
+        handlers.onUsage?.({
+          modelName: payload.model_name ?? 'model',
+          inputTokens: payload.input_tokens ?? 0,
+          outputTokens: payload.output_tokens ?? 0,
         })
       } else if (event.event === 'final') {
         handlers.onFinal(JSON.parse(event.data) as ChatMessageResponse)

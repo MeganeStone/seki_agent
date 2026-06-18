@@ -18,16 +18,35 @@ Run the API:
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-For local Windows runs, make sure the root `.env` uses project-local paths,
-not Docker container paths:
+For local Windows runs, the usual development setup is:
 
-```env
-SEKI_DATABASE_PATH="D:/seki/AI/Langchain/seki_agent/data/db/seki_agent.db"
-SEKI_WORKSPACE_DIR="D:/seki/AI/Langchain/seki_agent/data/workspace"
+1. Start PostgreSQL and Redis with Docker Compose from the repository root.
+2. Run FastAPI directly from this virtual environment.
+
+```bash
+docker compose up -d postgres redis
 ```
 
-If `.env` contains `/app/data/...`, it is meant for Docker and local login
-will read/write a different SQLite database.
+Make sure the root `.env` uses project-local paths and host ports:
+
+```env
+SEKI_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/seki_agent"
+SEKI_CELERY_BROKER_URL="redis://127.0.0.1:6379/0"
+SEKI_WORKSPACE_DIR="D:/seki/cc/seki_agent/data/workspace"
+```
+
+If `.env` contains `postgres:5432`, it is meant for processes running inside
+Docker Compose. A backend running directly on Windows should use
+`127.0.0.1:5432` unless you changed the host port mapping.
+
+Legacy RAG reads its knowledge-base directories from plain (non-`SEKI_`)
+environment variables; the data lives under `data/`:
+
+```env
+TBOX_DOCS_DIR="C:/seki/seki_agent/seki_agent/data/tbox_docs"
+PARENT_STORE_DIR="C:/seki/seki_agent/seki_agent/data/parent_store"
+VECTOR_DB_DIR="C:/seki/seki_agent/seki_agent/data/tbox_vector_db"
+```
 
 Long-running translation, SPI, and diff tasks use a configurable executor:
 
@@ -38,7 +57,21 @@ SEKI_TASK_EXECUTOR=sync
 # MVP background execution: run tasks in a local thread pool
 SEKI_TASK_EXECUTOR=thread
 SEKI_TASK_EXECUTOR_MAX_WORKERS=3
+
+# production-like compose path: send tasks to Redis/Celery worker
+SEKI_TASK_EXECUTOR=celery
+SEKI_CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 ```
+
+Each conversation also has a token budget:
+
+```env
+SEKI_MAX_CONVERSATION_TOKENS=200000
+```
+
+When the total reaches the current budget, the backend returns 409 and the
+frontend asks the user whether to continue. Each confirmation increases the
+budget by one base unit.
 
 Code agent command execution is policy driven:
 
@@ -55,7 +88,14 @@ will not execute after confirmation until a matching confirmed prefix is
 configured. Dangerous commands and shell control operators are still rejected.
 The code agent can delete files and directories under the current user's
 workspace. Project root and shared skills paths are readable/executable but not
-deletable.
+deletable. Overwriting an existing file produces a unified-diff preview and a
+pending operation that the user must confirm in the frontend; files the agent
+created in the current run can be overwritten directly.
+
+Every code agent tool execution (succeeded, failed, rejected, or pending
+confirmation) is persisted to the `code_audit_records` table. Audit details do
+not include file contents. Query the current user's records via
+`GET /api/v1/code-operations/audit`.
 
 The runtime Agent path is LangGraph, where the main agent decides handoff
 through tools instead of backend keyword guesses. `RuleBasedAgentRunner` is
@@ -81,6 +121,10 @@ LANGSMITH_API_KEY=your-langsmith-key
 LANGSMITH_PROJECT=seki-agent-local
 ```
 
+The project also has a built-in trace store in PostgreSQL. Each chat turn
+creates an `agent_trace_runs` row; model usage and tool calls are stored in
+`agent_trace_events` and can be viewed from the frontend Trace page.
+
 Health check:
 
 ```text
@@ -93,14 +137,23 @@ Create or update a local user:
 python scripts/create_user.py alice secret
 ```
 
-The script prints the database path it wrote to. It must match the database
-path used by the running backend.
+The script prints the database URL it wrote to. It must match the database URL
+used by the running backend.
 
 ## Tests
 
 ```bash
 pytest
 ```
+
+Tests require PostgreSQL on `127.0.0.1:5432` by default. Start dependencies
+first:
+
+```bash
+docker compose up -d postgres redis
+```
+
+Use `SEKI_TEST_DATABASE_URL` if your test database is on another port.
 
 ## Docker Compose
 

@@ -1,6 +1,6 @@
 import difflib
 import shutil
-import sqlite3
+import psycopg
 import stat
 import subprocess
 import tarfile
@@ -11,11 +11,16 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.repositories.diff_repository import DiffRepository
 from app.schemas.diff import DiffSummary, DiffTaskRead
 from app.services.file_service import FileService
-from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor, ThreadPoolTaskExecutor
+from app.services.task_executor import (
+    CeleryTaskExecutor,
+    SynchronousTaskExecutor,
+    TaskExecutor,
+    ThreadPoolTaskExecutor,
+)
 
 
 Comparator = Callable[[Path, Path, str, str, str], str]
@@ -24,13 +29,13 @@ Comparator = Callable[[Path, Path, str, str, str], str]
 class DiffService:
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         file_service: FileService | None = None,
         diff_work_dir: Path | None = None,
         legacy_src_dir: Path | None = None,
         comparator: Comparator | None = None,
         task_executor: TaskExecutor | None = None,
-        db_path: Path | None = None,
+        database_url: str | None = None,
     ):
         settings = get_settings()
         self.conn = conn
@@ -39,19 +44,32 @@ class DiffService:
         self.file_service = file_service or FileService(conn)
         self.diff_work_dir = diff_work_dir or settings.diff_work_dir
         self.legacy_src_dir = legacy_src_dir or settings.legacy_src_dir
-        self.db_path = db_path or settings.database_path
+        self.database_url = database_url or settings.database_url
         self.comparator = comparator or self._compare_archives
         self.task_executor = task_executor or SynchronousTaskExecutor()
 
     def create_task(self, owner_username: str, left_file_id: str, right_file_id: str) -> DiffTaskRead:
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, left_file_id, right_file_id)
-        self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, left_file_id, right_file_id))
+        if isinstance(self.task_executor, CeleryTaskExecutor):
+            self.task_executor.enqueue(
+                "diff",
+                {
+                    "task_id": task_id,
+                    "owner_username": owner_username,
+                    "left_file_id": left_file_id,
+                    "right_file_id": right_file_id,
+                },
+            )
+        else:
+            self.task_executor.submit(
+                lambda: self._run_task_in_executor(task_id, owner_username, left_file_id, right_file_id)
+            )
         return self.get_task(owner_username, task_id)
 
     def _run_task_in_executor(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> None:
         if isinstance(self.task_executor, ThreadPoolTaskExecutor):
-            conn = connect(self.db_path)
+            conn = connect(self.database_url)
             try:
                 service = DiffService(
                     conn,
@@ -60,7 +78,7 @@ class DiffService:
                     legacy_src_dir=self.legacy_src_dir,
                     comparator=self.comparator,
                     task_executor=SynchronousTaskExecutor(),
-                    db_path=self.db_path,
+                    database_url=self.database_url,
                 )
                 service._run_task(task_id, owner_username, left_file_id, right_file_id)
             finally:
@@ -201,7 +219,7 @@ class DiffService:
         return path.read_text(encoding="utf-8", errors="ignore").splitlines()
 
     @staticmethod
-    def _to_schema(row: sqlite3.Row) -> DiffTaskRead:
+    def _to_schema(row: dict) -> DiffTaskRead:
         result_text = row["result_text"]
         bin_changed = bool(result_text and "=== bin_size.txt diff ===" in result_text)
         lib_changed = bool(result_text and "=== lib_size.txt diff ===" in result_text)

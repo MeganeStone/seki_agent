@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
-import { checkHealth } from './api/client'
+import { checkHealth, fetchMe } from './api/client'
+import AdminUsersPage from './pages/AdminUsersPage'
 import ChatPage from './pages/ChatPage'
 import DiffPage from './pages/DiffPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
 import SpiPage from './pages/SpiPage'
 import TasksPage from './pages/TasksPage'
+import TracePage from './pages/TracePage'
 import TranslationPage from './pages/TranslationPage'
 import type { User } from './types/auth'
 import { clearStoredUsername, persistUsername, readStoredUsername } from './utils/storageScope'
 
 type HealthState = 'checking' | 'ok' | 'error'
 
-const routes = [
+type RouteDef = {
+  path: string
+  title: string
+  description: string
+  status: string
+  adminOnly?: boolean
+}
+
+const routes: RouteDef[] = [
   // 当前前端使用 hash route，避免本地 Vite 和静态部署时额外配置 history fallback。
   {
     path: 'login',
@@ -57,6 +67,19 @@ const routes = [
     description: '查看翻译、SPI 解析和版本差分的最近任务。',
     status: '可验证',
   },
+  {
+    path: 'trace',
+    title: '运行追踪',
+    description: '查看 Agent 每轮运行的工具调用、token 用量和耗时。',
+    status: '可验证',
+  },
+  {
+    path: 'admin-users',
+    title: '用户管理',
+    description: '管理员创建、查询和删除用户。',
+    status: '可验证',
+    adminOnly: true,
+  },
 ]
 
 function App() {
@@ -74,6 +97,20 @@ function App() {
       .then(() => setHealth('ok'))
       .catch(() => setHealth('error'))
   }, [])
+
+  // 刷新页面后 localStorage 只有用户名，向后端拉一次当前用户补齐 is_admin。
+  useEffect(() => {
+    if (!accessToken) return
+    fetchMe(accessToken)
+      .then((me) => setUser(me))
+      .catch(() => {
+        // token 失效时回到未登录状态。
+        window.localStorage.removeItem('seki_access_token')
+        clearStoredUsername()
+        setAccessToken(null)
+        setUser(null)
+      })
+  }, [accessToken])
 
   useEffect(() => {
     function handleHashChange() {
@@ -138,6 +175,20 @@ function App() {
       return <TasksPage accessToken={accessToken} />
     }
 
+    if (activeRoute.path === 'trace') {
+      return <TracePage accessToken={accessToken} />
+    }
+
+    if (activeRoute.path === 'admin-users') {
+      return (
+        <AdminUsersPage
+          accessToken={accessToken}
+          currentUsername={user?.username ?? null}
+          isAdmin={Boolean(user?.is_admin)}
+        />
+      )
+    }
+
     return <LoginPage onLogin={handleLogin} user={user} />
   }
 
@@ -153,7 +204,9 @@ function App() {
         </div>
 
         <nav className="nav-list" aria-label="主导航">
-          {routes.map((item) => (
+          {routes
+            .filter((item) => !item.adminOnly || user?.is_admin)
+            .map((item) => (
             <a
               aria-current={activeRoute.path === item.path ? 'page' : undefined}
               href={`#/${item.path}`}

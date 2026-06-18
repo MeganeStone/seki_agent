@@ -24,3 +24,20 @@ class CodeOperationRead(BaseModel):
 
 class CodeOperationListResponse(BaseModel):
     items: list[CodeOperationRead]
+
+
+class CodeAuditRead(BaseModel):
+    record_id: str
+    conversation_id: str
+    agent_name: str
+    tool_name: str
+    status: str
+    target: str
+    message: str
+    detail: dict | None = None
+    started_at: datetime
+    finished_at: datetime
+
+
+class CodeAuditListResponse(BaseModel):
+    items: list[CodeAuditRead]

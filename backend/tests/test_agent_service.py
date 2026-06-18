@@ -1,10 +1,10 @@
-import sqlite3
+import psycopg
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.services.agent_runner import AgentRequest, AgentResponse, AgentStreamEvent, ChatHistoryMessage
 from app.services.agent_service import AgentService
 from app.services.chat_model_service import ChatModelService
@@ -12,15 +12,15 @@ from app.services.rag_service import RagService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
         conn.close()
 
 
-def test_agent_service_delegates_to_rag_and_records_messages(test_db: sqlite3.Connection) -> None:
+def test_agent_service_delegates_to_rag_and_records_messages(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -34,7 +34,7 @@ def test_agent_service_delegates_to_rag_and_records_messages(test_db: sqlite3.Co
         """
         SELECT role, content
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -45,7 +45,7 @@ def test_agent_service_delegates_to_rag_and_records_messages(test_db: sqlite3.Co
     ]
 
 
-def test_agent_service_conversations_are_owner_isolated(test_db: sqlite3.Connection) -> None:
+def test_agent_service_conversations_are_owner_isolated(test_db: psycopg.Connection) -> None:
     service = AgentService(test_db, rag_service=RagService(answerer=lambda question: "ok"))
     conversation = service.create_conversation("alice")
 
@@ -55,7 +55,7 @@ def test_agent_service_conversations_are_owner_isolated(test_db: sqlite3.Connect
     assert exc_info.value.status_code == 404
 
 
-def test_agent_service_creates_pending_operation_from_runner_data(test_db: sqlite3.Connection) -> None:
+def test_agent_service_creates_pending_operation_from_runner_data(test_db: psycopg.Connection) -> None:
     class PendingRunner:
         def run(self, request: AgentRequest) -> AgentResponse:
             return AgentResponse(
@@ -82,7 +82,7 @@ def test_agent_service_creates_pending_operation_from_runner_data(test_db: sqlit
     assert pending["payload"]["path"] == "existing.txt"
 
 
-def test_agent_service_records_tool_messages_from_runner(test_db: sqlite3.Connection) -> None:
+def test_agent_service_records_tool_messages_from_runner(test_db: psycopg.Connection) -> None:
     class ToolMessageRunner:
         def run(self, request: AgentRequest) -> AgentResponse:
             return AgentResponse(
@@ -101,7 +101,7 @@ def test_agent_service_records_tool_messages_from_runner(test_db: sqlite3.Connec
         """
         SELECT role, content
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -113,7 +113,7 @@ def test_agent_service_records_tool_messages_from_runner(test_db: sqlite3.Connec
     ]
 
 def test_agent_service_records_ai_tool_call_message_but_hides_it_from_chat_history(
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
 ) -> None:
     class ToolCallRunner:
         def run(self, request: AgentRequest) -> AgentResponse:
@@ -153,7 +153,7 @@ def test_agent_service_records_ai_tool_call_message_but_hides_it_from_chat_histo
         """
         SELECT role, content, metadata
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -169,7 +169,7 @@ def test_agent_service_records_ai_tool_call_message_but_hides_it_from_chat_histo
     ]
 
 
-def test_agent_service_starts_next_turn_from_previous_active_agent(test_db: sqlite3.Connection) -> None:
+def test_agent_service_starts_next_turn_from_previous_active_agent(test_db: psycopg.Connection) -> None:
     class SwitchingRunner:
         def __init__(self) -> None:
             self.requests: list[AgentRequest] = []
@@ -206,7 +206,7 @@ class FakeRunner:
         )
 
 
-def test_agent_service_can_inject_runner_boundary(test_db: sqlite3.Connection) -> None:
+def test_agent_service_can_inject_runner_boundary(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -215,7 +215,8 @@ def test_agent_service_can_inject_runner_boundary(test_db: sqlite3.Connection) -
 
     assert response.answer == "runner answer: hello"
     assert response.route == "test-route"
-    assert response.data == {"task_id": "runner-task", "status": "succeeded"}
+    business_data = {key: value for key, value in response.data.items() if key != "token_usage"}
+    assert business_data == {"task_id": "runner-task", "status": "succeeded"}
     assert runner.requests[0] == AgentRequest(
         owner_username="alice",
         conversation_id=conversation.conversation_id,
@@ -227,7 +228,7 @@ def test_agent_service_can_inject_runner_boundary(test_db: sqlite3.Connection) -
     )
 
 
-def test_agent_service_passes_request_api_key_to_runner(test_db: sqlite3.Connection) -> None:
+def test_agent_service_passes_request_api_key_to_runner(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -237,7 +238,7 @@ def test_agent_service_passes_request_api_key_to_runner(test_db: sqlite3.Connect
     assert runner.requests[0].api_key == "request-key"
 
 
-def test_agent_service_passes_web_search_api_key_to_runner(test_db: sqlite3.Connection) -> None:
+def test_agent_service_passes_web_search_api_key_to_runner(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -252,7 +253,7 @@ def test_agent_service_passes_web_search_api_key_to_runner(test_db: sqlite3.Conn
     assert runner.requests[0].web_search_api_key == "volc-key"
 
 
-def test_agent_service_injected_runner_can_chat_without_knowledge_base(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_can_chat_without_knowledge_base(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -270,7 +271,7 @@ def test_agent_service_injected_runner_can_chat_without_knowledge_base(test_db: 
     assert runner.requests[0].use_knowledge_base is False
 
 
-def test_agent_service_passes_recent_conversation_history_to_runner(test_db: sqlite3.Connection) -> None:
+def test_agent_service_passes_recent_conversation_history_to_runner(test_db: psycopg.Connection) -> None:
     runner = FakeRunner()
     service = AgentService(test_db, runner=runner)
     conversation = service.create_conversation("alice")
@@ -285,7 +286,7 @@ def test_agent_service_passes_recent_conversation_history_to_runner(test_db: sql
     ]
 
 
-def test_agent_service_isolates_history_by_active_agent(test_db: sqlite3.Connection) -> None:
+def test_agent_service_isolates_history_by_active_agent(test_db: psycopg.Connection) -> None:
     class RecordingRunner:
         def __init__(self) -> None:
             self.requests: list[AgentRequest] = []
@@ -322,7 +323,7 @@ def test_agent_service_isolates_history_by_active_agent(test_db: sqlite3.Connect
     }
 
 
-def test_agent_service_passes_separate_histories_for_main_and_code_agents(test_db: sqlite3.Connection) -> None:
+def test_agent_service_passes_separate_histories_for_main_and_code_agents(test_db: psycopg.Connection) -> None:
     class AlternatingRunner:
         def __init__(self) -> None:
             self.requests: list[AgentRequest] = []
@@ -361,7 +362,7 @@ def test_agent_service_passes_separate_histories_for_main_and_code_agents(test_d
 
 
 def test_agent_service_stores_handoff_turn_under_final_answering_agent_when_route_is_generic(
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
 ) -> None:
     class FinalCodeRunner:
         def run(self, request: AgentRequest) -> AgentResponse:
@@ -380,7 +381,7 @@ def test_agent_service_stores_handoff_turn_under_final_answering_agent_when_rout
         """
         SELECT role, content, agent_name
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -392,7 +393,7 @@ def test_agent_service_stores_handoff_turn_under_final_answering_agent_when_rout
 
 
 def test_agent_service_keeps_explicit_main_handoff_decision_under_main_agent(
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
 ) -> None:
     class HandoffDecisionRunner:
         def run(self, request: AgentRequest) -> AgentResponse:
@@ -411,7 +412,7 @@ def test_agent_service_keeps_explicit_main_handoff_decision_under_main_agent(
         """
         SELECT role, content, agent_name
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -422,7 +423,7 @@ def test_agent_service_keeps_explicit_main_handoff_decision_under_main_agent(
     ]
 
 
-def test_agent_service_includes_tool_messages_in_agent_history(test_db: sqlite3.Connection) -> None:
+def test_agent_service_includes_tool_messages_in_agent_history(test_db: psycopg.Connection) -> None:
     class ToolThenAnswerRunner:
         def __init__(self) -> None:
             self.calls = 0
@@ -451,7 +452,7 @@ def test_agent_service_includes_tool_messages_in_agent_history(test_db: sqlite3.
     service.ask("alice", conversation.conversation_id, "继续")
 
 
-def test_agent_service_list_messages_hides_tool_messages(test_db: sqlite3.Connection) -> None:
+def test_agent_service_list_messages_hides_tool_messages(test_db: psycopg.Connection) -> None:
     service = AgentService(test_db, runner=FakeRunner())
     conversation = service.create_conversation("alice")
 
@@ -461,7 +462,7 @@ def test_agent_service_list_messages_hides_tool_messages(test_db: sqlite3.Connec
         """
         SELECT role, content
         FROM chat_messages
-        WHERE conversation_id = ?
+        WHERE conversation_id = %s
         ORDER BY created_at
         """,
         (conversation.conversation_id,),
@@ -526,7 +527,7 @@ class FakeDiffService:
         return FakeTask("diff-task")
 
 
-def test_agent_service_injected_runner_can_return_translation_tool_data(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_can_return_translation_tool_data(test_db: psycopg.Connection) -> None:
     translation_service = FakeTranslationService()
     runner = FakeRunner()
     service = AgentService(
@@ -545,14 +546,15 @@ def test_agent_service_injected_runner_can_return_translation_tool_data(test_db:
 
     assert response.answer == "runner answer: 请翻译 file_id=file-1 target_language=英语"
     assert response.route == "test-route"
-    assert response.data == {
+    business_data = {key: value for key, value in response.data.items() if key != "token_usage"}
+    assert business_data == {
         "task_id": "runner-task",
         "status": "succeeded",
     }
     assert translation_service.calls == []
 
 
-def test_agent_service_injected_runner_keeps_spi_request_boundary(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_keeps_spi_request_boundary(test_db: psycopg.Connection) -> None:
     spi_service = FakeSpiService()
     runner = FakeRunner()
     service = AgentService(
@@ -570,7 +572,7 @@ def test_agent_service_injected_runner_keeps_spi_request_boundary(test_db: sqlit
     assert spi_service.calls == []
 
 
-def test_agent_service_injected_runner_keeps_diff_request_boundary(test_db: sqlite3.Connection) -> None:
+def test_agent_service_injected_runner_keeps_diff_request_boundary(test_db: psycopg.Connection) -> None:
     diff_service = FakeDiffService()
     runner = FakeRunner()
     service = AgentService(
@@ -592,7 +594,7 @@ def test_agent_service_injected_runner_keeps_diff_request_boundary(test_db: sqli
     assert diff_service.calls == []
 
 
-def test_agent_service_builds_summary_history_when_over_limit(test_db: sqlite3.Connection) -> None:
+def test_agent_service_builds_summary_history_when_over_limit(test_db: psycopg.Connection) -> None:
     class SummarizingChatModel:
         def summarize_messages(self, messages, previous_summary=None, api_key=None):
             return f"summary:{len(messages)}:{previous_summary or ''}"

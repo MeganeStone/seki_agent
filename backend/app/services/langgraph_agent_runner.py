@@ -131,6 +131,17 @@ class LangGraphAgentRunner:
                         yield AgentStreamEvent(kind="delta", text=text)
                     continue
 
+                if kind == "on_chat_model_end":
+                    usage = self._extract_usage(event.get("data", {}).get("output"))
+                    if usage:
+                        yield AgentStreamEvent(
+                            kind="usage",
+                            model_name=str(event.get("name") or "model"),
+                            input_tokens=usage[0],
+                            output_tokens=usage[1],
+                        )
+                    continue
+
             values = final_values
             if final_answer_parts and not values.get("answer"):
                 values = {**values, "answer": "".join(final_answer_parts)}
@@ -213,6 +224,25 @@ class LangGraphAgentRunner:
         return "tool failed"
 
     @staticmethod
+    def _extract_usage(output: object) -> tuple[int, int] | None:
+        """从模型输出消息提取 usage_metadata（input/output tokens）。"""
+        if output is None:
+            return None
+        usage = getattr(output, "usage_metadata", None)
+        if usage is None and isinstance(output, dict):
+            usage = output.get("usage_metadata")
+        if not isinstance(usage, dict):
+            return None
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        if not isinstance(input_tokens, int) and not isinstance(output_tokens, int):
+            return None
+        return (
+            input_tokens if isinstance(input_tokens, int) else 0,
+            output_tokens if isinstance(output_tokens, int) else 0,
+        )
+
+    @staticmethod
     def _looks_like_graph_output(output: dict) -> bool:
         return any(key in output for key in ("answer", "messages", "route", "active_agent", "agent_name"))
 
@@ -239,10 +269,14 @@ class LangGraphAgentRunner:
             answer = result.get("answer")
             if answer is None:
                 answer = LangGraphAgentRunner._extract_last_message_content(result.get("messages", []))
+            data = LangGraphAgentRunner._response_data(result)
+            usage = LangGraphAgentRunner._sum_current_turn_usage(result.get("messages", []))
+            if usage is not None:
+                data = {**(data or {}), "token_usage": usage}
             return AgentResponse(
                 answer=str(answer or ""),
                 sources=result.get("sources", []),
-                data=LangGraphAgentRunner._response_data(result),
+                data=data,
                 route=str(result.get("route", "langgraph")),
                 messages_to_store=LangGraphAgentRunner._extract_messages_to_store(result.get("messages", [])),
             )
@@ -261,6 +295,35 @@ class LangGraphAgentRunner:
                 data[key] = result[key]
 
         return data or None
+
+    @staticmethod
+    def _sum_current_turn_usage(messages: object) -> dict | None:
+        """汇总本轮（最后一条 user 消息之后）模型消息的 token 用量。"""
+        if not isinstance(messages, list):
+            return None
+        last_user_index = -1
+        for index, message in enumerate(messages):
+            if LangGraphAgentRunner._message_role(message) in {"user", "human"}:
+                last_user_index = index
+        current_turn = messages[last_user_index + 1 :] if last_user_index >= 0 else messages
+
+        input_tokens = 0
+        output_tokens = 0
+        found = False
+        for message in current_turn:
+            usage = LangGraphAgentRunner._extract_usage(message)
+            if usage is None:
+                continue
+            found = True
+            input_tokens += usage[0]
+            output_tokens += usage[1]
+        if not found:
+            return None
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
 
     @staticmethod
     def _extract_last_message_content(messages: object) -> str:

@@ -51,11 +51,19 @@ def create_code_langchain_tools(
             ),
         ),
         StructuredTool.from_function(
-            func=_write_text_file_func(file_tool, owner_username, conversation_id, agent_name),
+            func=_write_text_file_func(
+                file_tool,
+                owner_username,
+                conversation_id,
+                agent_name,
+                operation_service,
+            ),
             name="code_write_text_file",
             description=(
                 "写入允许工作目录内的 UTF-8 文本文件。"
                 "默认不覆盖已有文件，覆盖必须显式 overwrite=true。"
+                "覆盖既有文件会生成 diff 预览并进入待确认列表，用户确认后才会真正写入；"
+                "本次运行新创建的文件可以直接覆盖。"
                 "当前不支持删除、移动文件或执行 shell。"
                 "参数：path 文件路径，content 文件内容，overwrite 是否覆盖。"
             ),
@@ -153,12 +161,17 @@ def _write_text_file_func(
     owner_username: str,
     conversation_id: str,
     agent_name: str,
+    operation_service: CodeOperationService | None = None,
 ) -> Callable[[str, str, bool], str]:
     def code_write_text_file(path: str, content: str, overwrite: bool = False) -> str:
         """写入允许工作目录内的 UTF-8 文本文件。"""
 
-        return format_code_execution_result(
-            tool.write_text_file(path, content, overwrite, owner_username, conversation_id, agent_name)
+        return _format_and_record_pending(
+            tool.write_text_file(path, content, overwrite, owner_username, conversation_id, agent_name),
+            operation_service,
+            owner_username,
+            conversation_id,
+            agent_name,
         )
 
     return code_write_text_file

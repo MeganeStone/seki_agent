@@ -1,18 +1,18 @@
-import sqlite3
+import psycopg
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_auth_service
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.services.auth_service import AuthService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
@@ -20,7 +20,7 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection) -> TestClient:
+def client(test_db: psycopg.Connection) -> TestClient:
     app = create_app()
 
     def override_auth_service() -> AuthService:
@@ -30,7 +30,7 @@ def client(test_db: sqlite3.Connection) -> TestClient:
     return TestClient(app)
 
 
-def test_login_returns_token_for_valid_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_login_returns_token_for_valid_user(client: TestClient, test_db: psycopg.Connection) -> None:
     AuthService(test_db).create_user("alice", "secret")
 
     response = client.post("/api/v1/auth/login", json={"username": "alice", "password": "secret"})
@@ -39,10 +39,10 @@ def test_login_returns_token_for_valid_user(client: TestClient, test_db: sqlite3
     body = response.json()
     assert body["token_type"] == "bearer"
     assert body["access_token"]
-    assert body["user"] == {"id": "alice", "username": "alice"}
+    assert body["user"] == {"id": "alice", "username": "alice", "is_admin": False}
 
 
-def test_login_rejects_invalid_password(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_login_rejects_invalid_password(client: TestClient, test_db: psycopg.Connection) -> None:
     AuthService(test_db).create_user("alice", "secret")
 
     response = client.post("/api/v1/auth/login", json={"username": "alice", "password": "wrong"})
@@ -50,7 +50,7 @@ def test_login_rejects_invalid_password(client: TestClient, test_db: sqlite3.Con
     assert response.status_code == 401
 
 
-def test_me_returns_current_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_me_returns_current_user(client: TestClient, test_db: psycopg.Connection) -> None:
     AuthService(test_db).create_user("alice", "secret")
     login_response = client.post("/api/v1/auth/login", json={"username": "alice", "password": "secret"})
     token = login_response.json()["access_token"]
@@ -58,7 +58,7 @@ def test_me_returns_current_user(client: TestClient, test_db: sqlite3.Connection
     response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
-    assert response.json() == {"id": "alice", "username": "alice"}
+    assert response.json() == {"id": "alice", "username": "alice", "is_admin": False}
 
 
 def test_me_rejects_missing_token(client: TestClient) -> None:

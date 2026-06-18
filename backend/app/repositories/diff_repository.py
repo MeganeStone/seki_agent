@@ -1,9 +1,9 @@
-import sqlite3
+import psycopg
 from datetime import datetime, timezone
 
 
 class DiffRepository:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: psycopg.Connection):
         self.conn = conn
 
     def initialize(self) -> None:
@@ -28,7 +28,7 @@ class DiffRepository:
         )
         self.conn.commit()
 
-    def create(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> sqlite3.Row:
+    def create(self, task_id: str, owner_username: str, left_file_id: str, right_file_id: str) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
@@ -36,7 +36,7 @@ class DiffRepository:
                 task_id, owner_username, left_file_id, right_file_id,
                 status, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (task_id, owner_username, left_file_id, right_file_id, "pending", now, now),
         )
@@ -54,13 +54,13 @@ class DiffRepository:
         result_text: str | None = None,
         result_file_id: str | None = None,
         error: str | None = None,
-    ) -> sqlite3.Row:
+    ) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
             UPDATE diff_tasks
-            SET status = ?, result_text = ?, result_file_id = ?, error = ?, updated_at = ?
-            WHERE task_id = ? AND owner_username = ?
+            SET status = %s, result_text = %s, result_file_id = %s, error = %s, updated_at = %s
+            WHERE task_id = %s AND owner_username = %s
             """,
             (status, result_text, result_file_id, error, now, task_id, owner_username),
         )
@@ -70,40 +70,40 @@ class DiffRepository:
             raise RuntimeError("Diff task disappeared")
         return row
 
-    def cancel_for_owner(self, task_id: str, owner_username: str) -> sqlite3.Row | None:
+    def cancel_for_owner(self, task_id: str, owner_username: str) -> dict | None:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
             UPDATE diff_tasks
-            SET status = ?, error = NULL, updated_at = ?
-            WHERE task_id = ? AND owner_username = ? AND status IN ('pending', 'running')
+            SET status = %s, error = NULL, updated_at = %s
+            WHERE task_id = %s AND owner_username = %s AND status IN ('pending', 'running')
             """,
             ("cancelled", now, task_id, owner_username),
         )
         self.conn.commit()
         return self.get_for_owner(task_id, owner_username)
 
-    def get_for_owner(self, task_id: str, owner_username: str) -> sqlite3.Row | None:
+    def get_for_owner(self, task_id: str, owner_username: str) -> dict | None:
         cursor = self.conn.execute(
             """
             SELECT task_id, owner_username, left_file_id, right_file_id, status,
                    result_text, result_file_id, error, created_at, updated_at
             FROM diff_tasks
-            WHERE task_id = ? AND owner_username = ?
+            WHERE task_id = %s AND owner_username = %s
             """,
             (task_id, owner_username),
         )
         return cursor.fetchone()
 
-    def list_for_owner(self, owner_username: str, limit: int = 50) -> list[sqlite3.Row]:
+    def list_for_owner(self, owner_username: str, limit: int = 50) -> list[dict]:
         cursor = self.conn.execute(
             """
             SELECT task_id, owner_username, left_file_id, right_file_id, status,
                    result_text, result_file_id, error, created_at, updated_at
             FROM diff_tasks
-            WHERE owner_username = ?
+            WHERE owner_username = %s
             ORDER BY updated_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_username, limit),
         )

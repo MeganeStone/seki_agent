@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_code_operation_service, get_current_user
 from app.schemas.auth import UserRead
-from app.schemas.code_operations import CodeOperationListResponse, CodeOperationRead
+from app.schemas.code_operations import CodeAuditListResponse, CodeOperationListResponse, CodeOperationRead
 from app.services.code_operation_service import CodeOperationService
 
 
@@ -24,6 +24,23 @@ def list_code_operations(
             current_user.username,
             conversation_id=conversation_id,
             operation_status=operation_status,
+            limit=limit,
+        )
+    )
+
+
+@router.get("/audit", response_model=CodeAuditListResponse)
+def list_code_audit_records(
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+    operation_service: Annotated[CodeOperationService, Depends(get_code_operation_service)],
+    conversation_id: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> CodeAuditListResponse:
+    """查询当前用户的 code agent 操作审计记录。"""
+    return CodeAuditListResponse(
+        items=operation_service.list_audit_records(
+            current_user.username,
+            conversation_id=conversation_id,
             limit=limit,
         )
     )

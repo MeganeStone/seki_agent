@@ -58,6 +58,12 @@ def stream_event_to_sse(event: AgentStreamEvent) -> str:
         }
     elif event.kind == "status":
         payload = {"text": event.text or ""}
+    elif event.kind == "usage":
+        payload = {
+            "model_name": event.model_name or "model",
+            "input_tokens": event.input_tokens or 0,
+            "output_tokens": event.output_tokens or 0,
+        }
     elif event.kind == "final" and event.response is not None:
         from app.schemas.chat import ChatMessageResponse
         from app.services.agent_runner import AgentResponse

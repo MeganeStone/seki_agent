@@ -1,7 +1,7 @@
 import importlib.util
 import json
 import shutil
-import sqlite3
+import psycopg
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -10,11 +10,16 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.repositories.spi_repository import SpiRepository
 from app.schemas.spi import SpiTaskRead
 from app.services.file_service import FileService
-from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor, ThreadPoolTaskExecutor
+from app.services.task_executor import (
+    CeleryTaskExecutor,
+    SynchronousTaskExecutor,
+    TaskExecutor,
+    ThreadPoolTaskExecutor,
+)
 
 
 SpiParser = Callable[[Path, str, str, str], dict]
@@ -23,13 +28,13 @@ SpiParser = Callable[[Path, str, str, str], dict]
 class SpiService:
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         file_service: FileService | None = None,
         spi_work_dir: Path | None = None,
         legacy_src_dir: Path | None = None,
         parser: SpiParser | None = None,
         task_executor: TaskExecutor | None = None,
-        db_path: Path | None = None,
+        database_url: str | None = None,
     ):
         settings = get_settings()
         self.conn = conn
@@ -38,7 +43,7 @@ class SpiService:
         self.file_service = file_service or FileService(conn)
         self.spi_work_dir = spi_work_dir or settings.spi_work_dir
         self.legacy_src_dir = legacy_src_dir or settings.legacy_src_dir
-        self.db_path = db_path or settings.database_path
+        self.database_url = database_url or settings.database_url
         self.parser = parser or self._load_legacy_parser()
         self.task_executor = task_executor or SynchronousTaskExecutor()
 
@@ -48,12 +53,22 @@ class SpiService:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="file_ids is required")
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, json.dumps(clean_file_ids, ensure_ascii=False))
-        self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, clean_file_ids))
+        if isinstance(self.task_executor, CeleryTaskExecutor):
+            self.task_executor.enqueue(
+                "spi",
+                {
+                    "task_id": task_id,
+                    "owner_username": owner_username,
+                    "file_ids": clean_file_ids,
+                },
+            )
+        else:
+            self.task_executor.submit(lambda: self._run_task_in_executor(task_id, owner_username, clean_file_ids))
         return self.get_task(owner_username, task_id)
 
     def _run_task_in_executor(self, task_id: str, owner_username: str, file_ids: list[str]) -> None:
         if isinstance(self.task_executor, ThreadPoolTaskExecutor):
-            conn = connect(self.db_path)
+            conn = connect(self.database_url)
             try:
                 service = SpiService(
                     conn,
@@ -62,7 +77,7 @@ class SpiService:
                     legacy_src_dir=self.legacy_src_dir,
                     parser=self.parser,
                     task_executor=SynchronousTaskExecutor(),
-                    db_path=self.db_path,
+                    database_url=self.database_url,
                 )
                 service._run_task(task_id, owner_username, file_ids)
             finally:
@@ -157,7 +172,7 @@ class SpiService:
         if not filename.lower().endswith(".log"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .log files are supported")
 
-    def _to_schema(self, row: sqlite3.Row) -> SpiTaskRead:
+    def _to_schema(self, row: dict) -> SpiTaskRead:
         result_filename = self._result_filename(row["owner_username"], row["result_file_id"])
         return SpiTaskRead(
             task_id=row["task_id"],

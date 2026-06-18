@@ -36,7 +36,7 @@ FastAPI Backend
   +-- tasks         后台任务抽象
   +-- storage       数据库、文件系统、向量库适配
   |
-  +-- SQLite / PostgreSQL-compatible repository layer
+  +-- PostgreSQL repository layer
   +-- Local File Storage
   +-- Chroma Vector DB
   +-- External LLM APIs
@@ -254,9 +254,9 @@ frontend/
 
 ## 7. 数据与存储
 
-首期建议：
+当前实现：
 
-- 用户与任务元数据：SQLite。
+- 用户、任务、会话、追踪、审计元数据：PostgreSQL。
 - 文件存储：本地目录。
 - 向量库：保留 Chroma。
 - 配置：`.env` + `pydantic-settings`。
@@ -265,7 +265,6 @@ frontend/
 
 ```text
 data/
-  db/
   uploads/
   workspace/
   translation/
@@ -283,7 +282,9 @@ data/
 
 ## 8. 任务处理
 
-首期可以先实现进程内任务管理接口，保留后续迁移到 Celery/RQ 的边界。
+当前已实现同步执行器、线程池执行器和 Redis + Celery 执行器。Docker Compose
+默认通过独立 `worker` 容器执行 Celery 任务；本机调试可继续使用 `sync` 或
+`thread`。
 
 任务化能力：
 
@@ -307,11 +308,7 @@ data/
 - translation/SPI/diff 在任务开始和写入最终结果前检查取消状态，避免取消后继续写入成功结果。
 - 如果旧脚本或外部 API 调用已经阻塞，任务会在回到后端检查点后停止；生产化阶段可用独立 worker 进程获得更强的终止能力。
 
-后续当并发任务变多时，引入：
-
-- Redis。
-- Celery 或 RQ。
-- 独立 worker 容器。
+Celery 任务仍采用协作式取消：已入队或运行中的任务会读取任务状态，在安全检查点退出。
 
 ## 9. 并发设计
 
@@ -356,11 +353,14 @@ data/
 
 ## 12. 部署设计
 
-首期 Docker Compose 服务建议：
+当前 Docker Compose 服务：
 
 ```text
 backend
 frontend
+postgres
+redis
+worker
 ```
 
 后续可扩展：
@@ -368,10 +368,7 @@ frontend
 ```text
 backend
 frontend
-redis
-worker
 qdrant
-postgres
 minio
 ```
 

@@ -50,6 +50,29 @@ class ThreadPoolTaskExecutor:
             logger.exception("Background task failed with an unhandled exception")
 
 
+class CeleryTaskExecutor:
+    """把业务任务发到 Celery 队列的执行器。
+
+    Celery 任务必须可 JSON 序列化，所以这里不接受闭包；service 层在检测到
+    Celery 执行器时改用 enqueue(kind, payload)，由 worker 端的
+    dispatch_business_task 重建 service 执行。
+    """
+
+    def __init__(self, send_task=None) -> None:
+        # send_task 可注入用于测试；默认懒加载 celery 任务避免无 Redis 环境 import 即失败。
+        self._send_task = send_task
+
+    def submit(self, task: TaskFn) -> None:
+        raise RuntimeError("CeleryTaskExecutor 不支持闭包任务，请使用 enqueue(kind, payload)")
+
+    def enqueue(self, kind: str, payload: dict) -> None:
+        if self._send_task is None:
+            from app.celery_app import run_business_task
+
+            self._send_task = lambda task_kind, task_payload: run_business_task.delay(task_kind, task_payload)
+        self._send_task(kind, payload)
+
+
 def create_task_executor(kind: str, max_workers: int = 3) -> TaskExecutor:
     """根据配置创建任务执行器。"""
     normalized = kind.strip().lower()
@@ -57,4 +80,6 @@ def create_task_executor(kind: str, max_workers: int = 3) -> TaskExecutor:
         return SynchronousTaskExecutor()
     if normalized in {"thread", "threadpool", "local_thread"}:
         return ThreadPoolTaskExecutor(max_workers=max_workers)
+    if normalized == "celery":
+        return CeleryTaskExecutor()
     raise ValueError(f"Unsupported task executor: {kind}")

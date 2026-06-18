@@ -9,8 +9,9 @@
 - 后端采用 FastAPI 模块化单体，入口为 `backend/app/main.py`。
 - 前端采用 React + Vite + TypeScript，入口为 `frontend/src/main.tsx`。
 - 后端分层为 API router、schema、service、repository、core 配置/安全模块。
-- SQLite 作为当前开发期数据库，文件存储使用本地 `data/workspace`。
-- Docker Compose 已包含 backend/frontend 两个服务。
+- PostgreSQL 作为当前数据库；本机开发可裸跑后端/前端，同时用 Docker Compose 启动 `postgres` 和 `redis` 依赖服务。
+- 文件存储使用本地 `data/workspace`，Docker Compose 将 `data/` 挂载到容器 `/app/data`。
+- Docker Compose 已包含 `postgres`、`redis`、`backend`、`worker`、`frontend` 服务；`postgres`/`redis` 同时映射到主机 `5432`/`6379` 方便 Windows 裸跑开发和 pytest。
 
 ### 用户与权限
 
@@ -18,6 +19,7 @@
 - 支持 JWT Bearer 认证。
 - 文件、任务、对话、code pending operation 均按 `owner_username` 隔离。
 - 提供 `backend/scripts/create_user.py` 创建/更新本地用户。
+- 已提供管理员用户管理 API 与前端页面：管理员可查询、创建和删除用户；禁止删除自己；删除用户会清理其文件元数据、会话消息等关联数据。
 
 ### 文件管理
 
@@ -68,7 +70,9 @@
 - 文件能力：列目录、读小文本、写小文本、创建目录；默认写入当前用户 `data/workspace/{username}`，项目根和 skills 目录只用于读取/执行。
 - 受限执行：可运行允许目录内 Python 脚本，可执行白名单命令。
 - 删除策略：当前用户 workspace 内的文件/目录可直接删除；目录必须显式 `recursive=true`；项目根和 shared skills 仍只读不可删除。
-- pending operation 后端和前端确认 UI 已接入。
+- 覆盖写入确认：`code_write_text_file` 覆盖既有文件时会生成 unified diff 预览并进入 pending operation，用户在前端确认后才真正写入；新文件和 code agent 本次运行创建的文件可直接写入。非 UTF-8 既有文件无法生成 diff，但仍要求确认。
+- 持久化审计：每次 `CodeExecutionService` 工具执行（成功/失败/拒绝/待确认）都会通过 audit sink 写入 `code_audit_records` 表；审计详情不落文件内容；`GET /api/v1/code-operations/audit` 可按当前用户和 conversation 查询。审计写入失败不会阻断工具执行。
+- pending operation 后端和前端确认 UI 已接入；覆盖写入的确认卡片会展示 diff 预览。
 - 任意 shell 字符串和高危命令仍未开放。
 
 ### 前端页面
@@ -89,6 +93,10 @@
 
 ### 可观测性
 
+- 已有自建 Agent trace：每轮对话写入 run，模型 token 用量、工具调用、耗时和错误写入 event；前端 Trace 页面可查看当前用户自己的运行记录。
+- Agent 对话页实时展示本轮/本会话 token 用量；达到 `SEKI_MAX_CONVERSATION_TOKENS * multiplier` 时后端返回 409，前端弹窗确认后调用扩容接口，下一档为 2 倍、3 倍，以此类推。
+- Agent 对话页支持手动停止当前 SSE 请求；客户端断开时后端将 trace run 标记为 `cancelled`，本轮不落库最终 assistant 消息。
+- 已接入结构化日志配置：`SEKI_LOG_FORMAT=json|console`、`SEKI_LOG_LEVEL=...`。
 - 推荐使用 LangSmith 原生环境变量追踪 LangChain/LangGraph 链路：
   - `LANGSMITH_TRACING=true`
   - `LANGSMITH_API_KEY=...`
@@ -111,18 +119,17 @@
 
 ### Code Agent
 
-- 持久化审计表：当前 `CodeExecutionService` 的部分审计仍偏内存/返回值。
 - 确认后命令执行策略需要继续收紧并可配置。
-- 写文件前 diff 预览和用户确认。
 - code agent 自我迭代修复流程：读文件、改文件、跑测试、总结变更。
+- 审计记录的前端查看页面（当前只有后端 API）。
 
 ### 并发与生产化
 
-- 当前已有本机线程池执行器；生产建议继续评估 Redis + Celery/RQ。
-- SQLite 后续应迁移 PostgreSQL。
+- 已支持同步、线程池和 Celery 三种任务执行器；Docker Compose 中 backend/worker 使用 Redis + Celery。
+- PostgreSQL 已成为默认数据库；测试通过独立 schema 隔离。
 - 本地文件存储后续可迁移 MinIO/对象存储。
 - legacy Chroma/向量库后续可迁移 Qdrant 等服务化向量库。
-- 增加结构化日志、健康检查细分、指标监控、备份恢复文档。
+- 仍需补健康检查细分、指标监控、备份恢复文档。
 
 ### 文档和测试
 

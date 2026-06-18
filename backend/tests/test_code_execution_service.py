@@ -109,8 +109,48 @@ def test_write_text_file_requires_explicit_overwrite(tmp_path: Path) -> None:
 
     overwrite_result = svc.write_text_file("note.txt", "new", overwrite=True)
 
-    assert overwrite_result.status == "succeeded"
+    assert overwrite_result.status == "requires_confirmation"
+    assert overwrite_result.data["requires_confirmation"] is True
+    assert "-old" in overwrite_result.data["diff_preview"]
+    assert "+new" in overwrite_result.data["diff_preview"]
+    assert path.read_text(encoding="utf-8") == "old"
+
+    confirmed_result = svc.write_text_file("note.txt", "new", overwrite=True, confirmed=True)
+
+    assert confirmed_result.status == "succeeded"
     assert path.read_text(encoding="utf-8") == "new"
+
+
+def test_write_text_file_overwrites_agent_created_file_directly(tmp_path: Path) -> None:
+    svc = service(tmp_path)
+    svc.write_text_file("draft.txt", "v1")
+
+    result = svc.write_text_file("draft.txt", "v2", overwrite=True)
+
+    assert result.status == "succeeded"
+    assert (tmp_path / "project" / "draft.txt").read_text(encoding="utf-8") == "v2"
+
+
+def test_write_overwrite_diff_preview_handles_non_utf8_file(tmp_path: Path) -> None:
+    svc = service(tmp_path)
+    path = tmp_path / "project" / "blob.txt"
+    path.write_bytes(b"\xff\xfe\x00binary")
+
+    result = svc.write_text_file("blob.txt", "text", overwrite=True)
+
+    assert result.status == "requires_confirmation"
+    assert result.data["diff_preview"] == "目标文件不是 UTF-8 文本，无法生成 diff 预览。"
+
+
+def test_write_overwrite_diff_preview_reports_no_change(tmp_path: Path) -> None:
+    svc = service(tmp_path)
+    path = tmp_path / "project" / "same.txt"
+    path.write_text("same", encoding="utf-8")
+
+    result = svc.write_text_file("same.txt", "same", overwrite=True)
+
+    assert result.status == "requires_confirmation"
+    assert "不会产生变化" in result.data["diff_preview"]
 
 
 def test_delete_agent_created_file_without_confirmation(tmp_path: Path) -> None:

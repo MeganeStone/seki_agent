@@ -1,9 +1,9 @@
-import sqlite3
+import psycopg
 from datetime import datetime, timezone
 
 
 class FileRepository:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: psycopg.Connection):
         self.conn = conn
 
     def initialize(self) -> None:
@@ -24,12 +24,12 @@ class FileRepository:
         )
         self.conn.commit()
 
-    def create(self, file_id: str, owner_username: str, filename: str, storage_path: str, size: int) -> sqlite3.Row:
+    def create(self, file_id: str, owner_username: str, filename: str, storage_path: str, size: int) -> dict:
         created_at = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
             INSERT INTO files (id, owner_username, filename, storage_path, size, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (file_id, owner_username, filename, storage_path, size, created_at),
         )
@@ -39,57 +39,57 @@ class FileRepository:
             raise RuntimeError("Failed to create file record")
         return row
 
-    def list_for_owner(self, owner_username: str) -> list[sqlite3.Row]:
+    def list_for_owner(self, owner_username: str) -> list[dict]:
         cursor = self.conn.execute(
             """
             SELECT id, owner_username, filename, storage_path, size, created_at
             FROM files
-            WHERE owner_username = ?
+            WHERE owner_username = %s
             ORDER BY created_at DESC
             """,
             (owner_username,),
         )
         return list(cursor.fetchall())
 
-    def get_for_owner(self, file_id: str, owner_username: str) -> sqlite3.Row | None:
+    def get_for_owner(self, file_id: str, owner_username: str) -> dict | None:
         cursor = self.conn.execute(
             """
             SELECT id, owner_username, filename, storage_path, size, created_at
             FROM files
-            WHERE id = ? AND owner_username = ?
+            WHERE id = %s AND owner_username = %s
             """,
             (file_id, owner_username),
         )
         return cursor.fetchone()
 
-    def get_by_storage_path(self, owner_username: str, storage_path: str) -> sqlite3.Row | None:
+    def get_by_storage_path(self, owner_username: str, storage_path: str) -> dict | None:
         cursor = self.conn.execute(
             """
             SELECT id, owner_username, filename, storage_path, size, created_at
             FROM files
-            WHERE owner_username = ? AND storage_path = ?
+            WHERE owner_username = %s AND storage_path = %s
             """,
             (owner_username, storage_path),
         )
         return cursor.fetchone()
 
-    def delete_by_storage_path(self, owner_username: str, storage_path: str) -> sqlite3.Row | None:
+    def delete_by_storage_path(self, owner_username: str, storage_path: str) -> dict | None:
         row = self.get_by_storage_path(owner_username, storage_path)
         if row is None:
             return None
         self.conn.execute(
-            "DELETE FROM files WHERE owner_username = ? AND storage_path = ?",
+            "DELETE FROM files WHERE owner_username = %s AND storage_path = %s",
             (owner_username, storage_path),
         )
         self.conn.commit()
         return row
 
-    def delete_for_owner(self, file_id: str, owner_username: str) -> sqlite3.Row | None:
+    def delete_for_owner(self, file_id: str, owner_username: str) -> dict | None:
         row = self.get_for_owner(file_id, owner_username)
         if row is None:
             return None
         self.conn.execute(
-            "DELETE FROM files WHERE id = ? AND owner_username = ?",
+            "DELETE FROM files WHERE id = %s AND owner_username = %s",
             (file_id, owner_username),
         )
         self.conn.commit()

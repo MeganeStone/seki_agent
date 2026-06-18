@@ -1,10 +1,10 @@
 import json
-import sqlite3
+import psycopg
 from datetime import datetime, timezone
 
 
 class CodeOperationRepository:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: psycopg.Connection):
         self.conn = conn
 
     def initialize(self) -> None:
@@ -48,7 +48,7 @@ class CodeOperationRepository:
         operation_type: str,
         payload: dict,
         expires_at: datetime,
-    ) -> sqlite3.Row:
+    ) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
@@ -56,7 +56,7 @@ class CodeOperationRepository:
                 id, owner_username, conversation_id, agent_name, operation_type,
                 payload_json, status, result_json, created_at, updated_at, expires_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 operation_id,
@@ -84,14 +84,14 @@ class CodeOperationRepository:
         conversation_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
-    ) -> list[sqlite3.Row]:
-        filters = ["owner_username = ?"]
+    ) -> list[dict]:
+        filters = ["owner_username = %s"]
         params: list[object] = [owner_username]
         if conversation_id:
-            filters.append("conversation_id = ?")
+            filters.append("conversation_id = %s")
             params.append(conversation_id)
         if status:
-            filters.append("status = ?")
+            filters.append("status = %s")
             params.append(status)
         params.append(limit)
         cursor = self.conn.execute(
@@ -100,18 +100,18 @@ class CodeOperationRepository:
             FROM code_pending_operations
             WHERE {" AND ".join(filters)}
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             params,
         )
         return list(cursor.fetchall())
 
-    def get_for_owner(self, operation_id: str, owner_username: str) -> sqlite3.Row | None:
+    def get_for_owner(self, operation_id: str, owner_username: str) -> dict | None:
         cursor = self.conn.execute(
             """
             SELECT *
             FROM code_pending_operations
-            WHERE id = ? AND owner_username = ?
+            WHERE id = %s AND owner_username = %s
             """,
             (operation_id, owner_username),
         )
@@ -123,13 +123,13 @@ class CodeOperationRepository:
         owner_username: str,
         status: str,
         result: dict | None = None,
-    ) -> sqlite3.Row | None:
+    ) -> dict | None:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
             UPDATE code_pending_operations
-            SET status = ?, result_json = ?, updated_at = ?
-            WHERE id = ? AND owner_username = ?
+            SET status = %s, result_json = %s, updated_at = %s
+            WHERE id = %s AND owner_username = %s
             """,
             (
                 status,

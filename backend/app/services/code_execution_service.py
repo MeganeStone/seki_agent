@@ -1,3 +1,4 @@
+import difflib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -58,6 +59,7 @@ class CodeExecutionService:
         default_timeout_seconds: int = 30,
         blocked_name_patterns: list[str] | None = None,
         after_delete_path=None,
+        audit_sink=None,
     ):
         settings = get_settings()
         roots = allowed_roots or settings.code_agent_allowed_roots or [
@@ -88,6 +90,8 @@ class CodeExecutionService:
         self.audit_records: list[CodeOperationRecord] = []
         self.created_paths: set[Path] = set()
         self.after_delete_path = after_delete_path
+        # 可选的持久化审计出口；为空时只保留进程内 audit_records。
+        self.audit_sink = audit_sink
         if not self._is_under_allowed_root(self.default_root):
             raise ValueError("default_root must be under an allowed root")
         for root in self.writable_roots:
@@ -638,7 +642,13 @@ class CodeExecutionService:
         owner_username: str = "",
         conversation_id: str = "",
         agent_name: str = "code_agent",
+        confirmed: bool = False,
     ) -> CodeExecutionResult:
+        """写入 UTF-8 文本文件。
+
+        新文件和 code agent 本次运行创建的文件可以直接写入；覆盖既有文件时会
+        生成 diff 预览并进入 pending confirmation，用户确认后才真正落盘。
+        """
         started_at = self._now()
         target = ""
         try:
@@ -681,6 +691,32 @@ class CodeExecutionService:
                     agent_name,
                 )
 
+            if (
+                resolved.exists()
+                and overwrite
+                and not confirmed
+                and not self._is_agent_created_path(resolved)
+            ):
+                diff_preview, diff_truncated = self._build_write_diff_preview(resolved, content)
+                return self._record_result(
+                    "write_text_file",
+                    "requires_confirmation",
+                    target,
+                    "覆盖既有文件需要用户确认，已生成 diff 预览。",
+                    started_at,
+                    owner_username,
+                    conversation_id,
+                    agent_name,
+                    data={
+                        "path": path,
+                        "content": content,
+                        "overwrite": True,
+                        "requires_confirmation": True,
+                        "diff_preview": diff_preview,
+                        "diff_truncated": diff_truncated,
+                    },
+                )
+
             resolved.write_text(content, encoding="utf-8")
             if not overwrite:
                 self.created_paths.add(resolved)
@@ -706,6 +742,29 @@ class CodeExecutionService:
                 conversation_id,
                 agent_name,
             )
+
+    def _build_write_diff_preview(self, resolved: Path, new_content: str) -> tuple[str, bool]:
+        """为覆盖写入生成 unified diff 预览，用于用户确认。"""
+        size = resolved.stat().st_size
+        if size > self.max_read_bytes:
+            return "目标文件超过读取限制，无法生成 diff 预览。", False
+        try:
+            old_content = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return "目标文件不是 UTF-8 文本，无法生成 diff 预览。", False
+
+        display = self._display_path(resolved)
+        diff_lines = difflib.unified_diff(
+            old_content.splitlines(),
+            new_content.splitlines(),
+            fromfile=f"a/{display}",
+            tofile=f"b/{display}",
+            lineterm="",
+        )
+        diff_text = "\n".join(diff_lines)
+        if not diff_text:
+            return "（新内容与现有文件相同，覆盖不会产生变化。）", False
+        return self._truncate_output(diff_text)
 
     def _resolve_existing_path(self, path: str) -> Path:
         resolved = self._candidate_path(path).resolve()
@@ -811,20 +870,25 @@ class CodeExecutionService:
             "target": target,
             **(data or {}),
         }
-        self.audit_records.append(
-            CodeOperationRecord(
-                operation_id=operation_id,
-                owner_username=owner_username,
-                conversation_id=conversation_id,
-                agent_name=agent_name,
-                tool_name=tool_name,
-                status=status,
-                target=target,
-                message=message,
-                started_at=started_at,
-                finished_at=finished_at,
-            )
+        record = CodeOperationRecord(
+            operation_id=operation_id,
+            owner_username=owner_username,
+            conversation_id=conversation_id,
+            agent_name=agent_name,
+            tool_name=tool_name,
+            status=status,
+            target=target,
+            message=message,
+            started_at=started_at,
+            finished_at=finished_at,
         )
+        self.audit_records.append(record)
+        if self.audit_sink is not None:
+            # 审计失败不能反过来阻断工具执行；这里吞掉异常只保留进程内记录。
+            try:
+                self.audit_sink(record, data)
+            except Exception:
+                pass
         return CodeExecutionResult(status=status, message=message, data=payload)
 
     def _after_delete_path(self, owner_username: str, resolved: Path) -> None:

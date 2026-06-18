@@ -1,7 +1,7 @@
 import importlib.util
 import os
 import shutil
-import sqlite3
+import psycopg
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -11,11 +11,16 @@ from fastapi import HTTPException, status
 
 from app.core.api_keys import temporary_env_api_key
 from app.core.config import get_settings
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.repositories.translation_repository import TranslationRepository
 from app.schemas.translation import TranslationTaskRead
 from app.services.file_service import FileService
-from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor, ThreadPoolTaskExecutor
+from app.services.task_executor import (
+    CeleryTaskExecutor,
+    SynchronousTaskExecutor,
+    TaskExecutor,
+    ThreadPoolTaskExecutor,
+)
 
 
 Translator = Callable[[str, str, str], str]
@@ -30,13 +35,13 @@ class TranslationService:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         file_service: FileService | None = None,
         translation_work_dir: Path | None = None,
         legacy_src_dir: Path | None = None,
         translator: Translator | None = None,
         task_executor: TaskExecutor | None = None,
-        db_path: Path | None = None,
+        database_url: str | None = None,
     ):
         settings = get_settings()
         self.conn = conn
@@ -45,7 +50,7 @@ class TranslationService:
         self.file_service = file_service or FileService(conn)
         self.translation_work_dir = translation_work_dir or settings.translation_work_dir
         self.legacy_src_dir = legacy_src_dir or settings.legacy_src_dir
-        self.db_path = db_path or settings.database_path
+        self.database_url = database_url or settings.database_url
         self.translator = translator or self._load_legacy_translator()
         self.uses_legacy_translator = translator is None
         self.task_executor = task_executor or SynchronousTaskExecutor()
@@ -64,9 +69,21 @@ class TranslationService:
 
         task_id = uuid4().hex
         self.tasks.create(task_id, owner_username, file_id, clean_target_language)
-        self.task_executor.submit(
-            lambda: self._run_task_in_executor(task_id, owner_username, file_id, clean_target_language, api_key)
-        )
+        if isinstance(self.task_executor, CeleryTaskExecutor):
+            self.task_executor.enqueue(
+                "translation",
+                {
+                    "task_id": task_id,
+                    "owner_username": owner_username,
+                    "file_id": file_id,
+                    "target_language": clean_target_language,
+                    "api_key": api_key,
+                },
+            )
+        else:
+            self.task_executor.submit(
+                lambda: self._run_task_in_executor(task_id, owner_username, file_id, clean_target_language, api_key)
+            )
         return self.get_task(owner_username, task_id)
 
     def _run_task_in_executor(
@@ -77,13 +94,13 @@ class TranslationService:
         target_language: str,
         api_key: str | None = None,
     ) -> None:
-        """在线程池执行时重新创建 SQLite 连接。
+        """在线程池执行时重新创建数据库连接。
 
-        sqlite3.Connection 默认不能跨线程安全复用，所以后台线程里要重新 connect。
+        psycopg.Connection 默认不能跨线程安全复用，所以后台线程里要重新 connect。
         同步执行器则直接使用当前 service。
         """
         if isinstance(self.task_executor, ThreadPoolTaskExecutor):
-            conn = connect(self.db_path)
+            conn = connect(self.database_url)
             try:
                 service = TranslationService(
                     conn,
@@ -92,7 +109,7 @@ class TranslationService:
                     legacy_src_dir=self.legacy_src_dir,
                     translator=self.translator,
                     task_executor=SynchronousTaskExecutor(),
-                    db_path=self.db_path,
+                    database_url=self.database_url,
                 )
                 service._run_task(task_id, owner_username, file_id, target_language, api_key=api_key)
             finally:
@@ -190,7 +207,7 @@ class TranslationService:
                 detail="Only .pptx, .xlsx and .docx files are supported",
             )
 
-    def _to_schema(self, row: sqlite3.Row) -> TranslationTaskRead:
+    def _to_schema(self, row: dict) -> TranslationTaskRead:
         return TranslationTaskRead(
             task_id=row["task_id"],
             status=row["status"],

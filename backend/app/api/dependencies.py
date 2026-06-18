@@ -1,11 +1,11 @@
-import sqlite3
+import psycopg
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.security import decode_access_token
-from app.db.sqlite import get_connection
+from app.db.postgres import get_connection
 from app.schemas.auth import UserRead
 from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
@@ -17,26 +17,27 @@ from app.services.spi_service import SpiService
 from app.services.task_executor import SynchronousTaskExecutor, TaskExecutor
 from app.services.task_service import TaskService
 from app.services.translation_service import TranslationService
+from app.services.user_admin_service import UserAdminService
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def get_auth_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> AuthService:
-    """创建认证服务；每个请求复用同一个 SQLite 连接依赖。"""
+def get_auth_service(conn: Annotated[psycopg.Connection, Depends(get_connection)]) -> AuthService:
+    """创建认证服务；每个请求复用同一个 postgresql 连接依赖。"""
     return AuthService(conn)
 
 
-def get_file_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> FileService:
+def get_file_service(conn: Annotated[psycopg.Connection, Depends(get_connection)]) -> FileService:
     return FileService(conn)
 
 
-def get_task_service(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> TaskService:
+def get_task_service(conn: Annotated[psycopg.Connection, Depends(get_connection)]) -> TaskService:
     return TaskService(conn)
 
 
 def get_code_operation_service(
-    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     file_service: Annotated[FileService, Depends(get_file_service)],
 ) -> CodeOperationService:
     return CodeOperationService(conn, file_service=file_service)
@@ -52,21 +53,21 @@ def get_task_executor(request: Request) -> TaskExecutor:
 
 
 def get_diff_service(
-    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
 ) -> DiffService:
     return DiffService(conn, task_executor=task_executor)
 
 
 def get_spi_service(
-    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
 ) -> SpiService:
     return SpiService(conn, task_executor=task_executor)
 
 
 def get_translation_service(
-    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     task_executor: Annotated[TaskExecutor, Depends(get_task_executor)],
 ) -> TranslationService:
     return TranslationService(conn, task_executor=task_executor)
@@ -77,7 +78,7 @@ def get_rag_service() -> RagService:
 
 
 def get_agent_service(
-    conn: Annotated[sqlite3.Connection, Depends(get_connection)],
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
     rag_service: Annotated[RagService, Depends(get_rag_service)],
     file_service: Annotated[FileService, Depends(get_file_service)],
     translation_service: Annotated[TranslationService, Depends(get_translation_service)],
@@ -97,6 +98,20 @@ def get_agent_service(
         spi_service=spi_service,
         diff_service=diff_service,
     )
+
+
+def get_user_admin_service(
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> UserAdminService:
+    return UserAdminService(conn)
+
+
+def get_agent_trace_service(
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> "AgentTraceService":
+    from app.services.agent_trace_service import AgentTraceService
+
+    return AgentTraceService(conn)
 
 
 def get_current_user(
@@ -119,3 +134,12 @@ def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+def get_current_admin(
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+) -> UserRead:
+    """要求当前用户是管理员，否则 403。"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+    return current_user

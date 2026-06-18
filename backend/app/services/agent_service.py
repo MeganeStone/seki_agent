@@ -1,15 +1,17 @@
 import json
-import sqlite3
+import psycopg
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.core.config import get_settings
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import ChatMessageRead, ChatMessageResponse, ConversationCreateResponse, ConversationRead
 from app.services.agent_runner import AgentRequest, AgentResponse, AgentRunner, ChatHistoryMessage
 from app.services.agent_runner_factory import create_default_agent_runner
 from app.services.agent_streaming import iter_runner_stream
+from app.services.agent_trace_service import AgentTraceService
 from app.services.chat_model_service import ChatModelService
 from app.services.code_operation_service import CodeOperationService
 from app.services.conversation_history import (
@@ -35,7 +37,7 @@ class AgentService:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         rag_service: RagService | None = None,
         file_service: FileService | None = None,
         translation_service: TranslationService | None = None,
@@ -43,12 +45,14 @@ class AgentService:
         diff_service: DiffService | None = None,
         runner: AgentRunner | None = None,
         chat_model_service: ChatModelService | None = None,
+        trace_service: AgentTraceService | None = None,
     ):
         self.conn = conn
         self.chats = ChatRepository(conn)
         self.chats.initialize()
         self.rag_service = rag_service or RagService()
         self.chat_model_service = chat_model_service or ChatModelService()
+        self.trace_service = trace_service or AgentTraceService(conn)
         self._last_built_histories: dict[str, BuiltAgentHistory] = {}
         self.runner = runner or create_default_agent_runner(
             self.rag_service,
@@ -111,15 +115,36 @@ class AgentService:
             api_key=api_key,
             web_search_api_key=web_search_api_key,
         )
-        result = self.runner.run(agent_request)
-        return self._finalize_agent_result(
+        trace_run = self.trace_service.start_run(owner_username, conversation_id, active_agent, clean_message)
+        try:
+            result = self.runner.run(agent_request)
+        except Exception as exc:
+            self.trace_service.finish_run(trace_run, "failed", error=str(exc))
+            raise
+        usage = (result.data or {}).get("token_usage")
+        if isinstance(usage, dict):
+            self.trace_service.record_model_usage(
+                trace_run,
+                "model",
+                int(usage.get("input_tokens") or 0),
+                int(usage.get("output_tokens") or 0),
+            )
+        response = self._finalize_agent_result(
             owner_username=owner_username,
             conversation_id=conversation_id,
             clean_message=clean_message,
             active_agent=active_agent,
             result=result,
             built_histories=self._last_built_histories,
+            turn_tokens=(trace_run.input_tokens + trace_run.output_tokens) if trace_run else 0,
         )
+        self.trace_service.finish_run(
+            trace_run,
+            "succeeded",
+            answer=result.answer,
+            agent_name=self._response_agent_name(active_agent, result),
+        )
+        return response
 
     async def ask_stream(
         self,
@@ -145,23 +170,77 @@ class AgentService:
             web_search_api_key=web_search_api_key,
         )
 
+        trace_run = self.trace_service.start_run(owner_username, conversation_id, active_agent, clean_message)
         final_response: ChatMessageResponse | None = None
-        async for event in iter_runner_stream(agent_request, self.runner):
-            if event.kind == "final" and event.response is not None:
-                final_response = self._finalize_agent_result(
-                    owner_username=owner_username,
-                    conversation_id=conversation_id,
-                    clean_message=clean_message,
-                    active_agent=active_agent,
-                    result=event.response,
-                    built_histories=self._last_built_histories,
-                )
-                yield AgentStreamEvent(kind="final", response=final_response)
-                continue
-            yield event
+        try:
+            async for event in iter_runner_stream(agent_request, self.runner):
+                if event.kind == "usage":
+                    self.trace_service.record_model_usage(
+                        trace_run,
+                        event.model_name or "model",
+                        event.input_tokens or 0,
+                        event.output_tokens or 0,
+                    )
+                    yield event
+                    continue
+                if event.kind == "tool_end":
+                    self.trace_service.record_tool_event(
+                        trace_run,
+                        event.tool_name or "tool",
+                        "succeeded",
+                        preview=event.preview or "",
+                        duration_ms=event.duration_ms,
+                    )
+                    yield event
+                    continue
+                if event.kind == "tool_error":
+                    self.trace_service.record_tool_event(
+                        trace_run,
+                        event.tool_name or "tool",
+                        "failed",
+                        error=event.error,
+                        duration_ms=event.duration_ms,
+                    )
+                    yield event
+                    continue
+                if event.kind == "final" and event.response is not None:
+                    final_response = self._finalize_agent_result(
+                        owner_username=owner_username,
+                        conversation_id=conversation_id,
+                        clean_message=clean_message,
+                        active_agent=active_agent,
+                        result=event.response,
+                        built_histories=self._last_built_histories,
+                        turn_tokens=(trace_run.input_tokens + trace_run.output_tokens) if trace_run else 0,
+                    )
+                    self.trace_service.finish_run(
+                        trace_run,
+                        "succeeded",
+                        answer=event.response.answer,
+                        agent_name=self._response_agent_name(active_agent, event.response),
+                    )
+                    yield AgentStreamEvent(kind="final", response=final_response)
+                    continue
+                yield event
+        except GeneratorExit:
+            # 客户端主动断开（前端“停止”按钮）：标记为 cancelled，本轮不落库。
+            if final_response is None:
+                self.trace_service.finish_run(trace_run, "cancelled")
+            raise
+        except Exception as exc:
+            self.trace_service.finish_run(trace_run, "failed", error=str(exc))
+            raise
 
         if final_response is None:
             result = self.runner.run(agent_request)
+            usage = (result.data or {}).get("token_usage")
+            if isinstance(usage, dict):
+                self.trace_service.record_model_usage(
+                    trace_run,
+                    "model",
+                    int(usage.get("input_tokens") or 0),
+                    int(usage.get("output_tokens") or 0),
+                )
             final_response = self._finalize_agent_result(
                 owner_username=owner_username,
                 conversation_id=conversation_id,
@@ -169,6 +248,13 @@ class AgentService:
                 active_agent=active_agent,
                 result=result,
                 built_histories=self._last_built_histories,
+                turn_tokens=(trace_run.input_tokens + trace_run.output_tokens) if trace_run else 0,
+            )
+            self.trace_service.finish_run(
+                trace_run,
+                "succeeded",
+                answer=result.answer,
+                agent_name=self._response_agent_name(active_agent, result),
             )
             yield AgentStreamEvent(kind="final", response=final_response)
 
@@ -181,10 +267,11 @@ class AgentService:
         use_knowledge_base: bool,
         api_key: str | None,
         web_search_api_key: str | None,
-    ) -> tuple[sqlite3.Row, str, AgentRequest]:
+    ) -> tuple[dict, str, AgentRequest]:
         conversation = self.chats.get_conversation(conversation_id, owner_username)
         if conversation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        self._enforce_token_limit(conversation)
         active_agent = str(conversation["active_agent"] or "main_agent")
 
         built_histories: dict[str, BuiltAgentHistory] = {}
@@ -215,6 +302,41 @@ class AgentService:
         )
         return conversation, active_agent, request
 
+    def _enforce_token_limit(self, conversation: dict) -> None:
+        """达到当前确认档位（基数 × 倍数）时拒绝继续，前端弹确认框后调 extend 接口。"""
+        base_limit = get_settings().max_conversation_tokens
+        if base_limit <= 0:
+            return
+        multiplier = int(conversation.get("token_limit_multiplier") or 1)
+        total = int(conversation.get("total_tokens") or 0)
+        current_limit = base_limit * multiplier
+        if total >= current_limit:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "token_limit_reached",
+                    "total_tokens": total,
+                    "current_limit": current_limit,
+                    "base_limit": base_limit,
+                    "multiplier": multiplier,
+                },
+            )
+
+    def extend_token_limit(self, owner_username: str, conversation_id: str) -> dict:
+        """用户确认继续：限额倍数 +1，返回新的限额信息。"""
+        conversation = self.chats.get_conversation(conversation_id, owner_username)
+        if conversation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        multiplier = self.chats.increment_token_limit_multiplier(conversation_id, owner_username)
+        base_limit = get_settings().max_conversation_tokens
+        return {
+            "conversation_id": conversation_id,
+            "total_tokens": int(conversation.get("total_tokens") or 0),
+            "base_limit": base_limit,
+            "multiplier": multiplier,
+            "current_limit": base_limit * multiplier if base_limit > 0 else 0,
+        }
+
     def _finalize_agent_result(
         self,
         *,
@@ -224,6 +346,7 @@ class AgentService:
         active_agent: str,
         result: AgentResponse,
         built_histories: dict[str, BuiltAgentHistory],
+        turn_tokens: int = 0,
     ) -> ChatMessageResponse:
         self._persist_summary_states(conversation_id, owner_username, built_histories)
         self._update_active_agent_from_result(owner_username, conversation_id, result)
@@ -260,6 +383,24 @@ class AgentService:
             agent_name=response_agent,
         )
         data = result.data
+        # 本轮 token 累计到会话总量，并把用量信息带回前端展示。
+        fallback_usage = (data or {}).get("token_usage")
+        if turn_tokens <= 0 and isinstance(fallback_usage, dict):
+            turn_tokens = int(fallback_usage.get("total_tokens") or 0)
+        conversation_total = self.chats.add_conversation_tokens(conversation_id, owner_username, turn_tokens)
+        base_limit = get_settings().max_conversation_tokens
+        conversation_row = self.chats.get_conversation(conversation_id, owner_username)
+        multiplier = int((conversation_row or {}).get("token_limit_multiplier") or 1)
+        data = {
+            **(data or {}),
+            "token_usage": {
+                "turn_tokens": turn_tokens,
+                "conversation_total_tokens": conversation_total,
+                "base_limit": base_limit,
+                "multiplier": multiplier,
+                "current_limit": base_limit * multiplier if base_limit > 0 else 0,
+            },
+        }
         if data and data.get("requires_confirmation"):
             operation = CodeOperationService(self.conn).create_pending_from_result(
                 owner_username=owner_username,
@@ -284,7 +425,7 @@ class AgentService:
         owner_username: str,
         agent_name: str,
         *,
-        conversation: sqlite3.Row | None = None,
+        conversation: dict | None = None,
         api_key: str | None = None,
     ) -> BuiltAgentHistory:
         raw_messages = tuple(
@@ -335,7 +476,7 @@ class AgentService:
             self.chats.update_agent_summaries(conversation_id, owner_username, summaries)
 
     @staticmethod
-    def _load_summary_state(conversation: sqlite3.Row, agent_name: str) -> AgentSummaryState | None:
+    def _load_summary_state(conversation: dict, agent_name: str) -> AgentSummaryState | None:
         raw = conversation["agent_summaries"] if "agent_summaries" in conversation.keys() else "{}"
         try:
             payload = json.loads(raw or "{}")
@@ -413,7 +554,7 @@ class AgentService:
         self.chats.update_active_agent(conversation_id, owner_username, next_agent)
 
     @staticmethod
-    def _message_metadata(row: sqlite3.Row) -> dict | None:
+    def _message_metadata(row: dict) -> dict | None:
         raw = row["metadata"] if "metadata" in row.keys() else None
         if not raw:
             return None

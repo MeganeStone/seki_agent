@@ -94,6 +94,16 @@ async def create_message_stream(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.post("/conversations/{conversation_id}/token-limit/extend")
+def extend_token_limit(
+    conversation_id: str,
+    current_user: Annotated[UserRead, Depends(get_current_user)],
+    agent_service: Annotated[AgentService, Depends(get_agent_service)],
+) -> dict:
+    """用户在前端确认继续对话后，把该会话的 token 限额倍数 +1。"""
+    return agent_service.extend_token_limit(current_user.username, conversation_id)
+
+
 @router.get("/conversations/{conversation_id}/messages", response_model=list[ChatMessageRead])
 def list_messages(
     conversation_id: str,

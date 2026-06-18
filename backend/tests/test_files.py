@@ -1,19 +1,19 @@
-import sqlite3
+import psycopg
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_auth_service, get_file_service
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.services.auth_service import AuthService
 from app.services.file_service import FileService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
@@ -21,7 +21,7 @@ def test_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection, tmp_path: Path) -> TestClient:
+def client(test_db: psycopg.Connection, tmp_path: Path) -> TestClient:
     app = create_app()
     workspace_dir = tmp_path / "workspace"
 
@@ -36,14 +36,14 @@ def client(test_db: sqlite3.Connection, tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
-def auth_headers(client: TestClient, test_db: sqlite3.Connection, username: str = "alice") -> dict[str, str]:
+def auth_headers(client: TestClient, test_db: psycopg.Connection, username: str = "alice") -> dict[str, str]:
     AuthService(test_db).create_user(username, "secret")
     response = client.post("/api/v1/auth/login", json={"username": username, "password": "secret"})
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_upload_list_download_and_delete_file(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_upload_list_download_and_delete_file(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
 
     upload_response = client.post(
@@ -72,7 +72,7 @@ def test_upload_list_download_and_delete_file(client: TestClient, test_db: sqlit
     assert missing_response.status_code == 404
 
 
-def test_files_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_files_are_isolated_by_user(client: TestClient, test_db: psycopg.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
 
@@ -87,7 +87,7 @@ def test_files_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connect
     assert bob_download.status_code == 404
 
 
-def test_upload_rejects_file_over_limit(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_upload_rejects_file_over_limit(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
 
     response = client.post(
@@ -107,7 +107,7 @@ def test_files_require_authentication(client: TestClient) -> None:
 
 def test_list_files_includes_code_agent_created_workspace_files(
     client: TestClient,
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
     tmp_path: Path,
 ) -> None:
     headers = auth_headers(client, test_db, "alice")
@@ -128,7 +128,7 @@ def test_list_files_includes_code_agent_created_workspace_files(
 
 def test_list_files_removes_records_for_missing_workspace_files(
     client: TestClient,
-    test_db: sqlite3.Connection,
+    test_db: psycopg.Connection,
     tmp_path: Path,
 ) -> None:
     headers = auth_headers(client, test_db, "alice")

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.repositories.chat_repository import ChatRepository
 from app.services.file_service import FileService
 from app.services.code_agent_tools import CodeAgentFileTool
@@ -89,11 +89,11 @@ def by_name_descriptions(tools) -> str:
     return "\n".join(tool.description for tool in tools)
 
 
-def test_code_tool_deletes_existing_workspace_file_without_pending_operation(tmp_path: Path) -> None:
+def test_code_tool_deletes_existing_workspace_file_without_pending_operation(tmp_path: Path, pg_dsn: str) -> None:
     root = tmp_path / "project"
     root.mkdir()
     (root / "existing.txt").write_text("keep", encoding="utf-8")
-    conn = connect(tmp_path / "test.db")
+    conn = connect(pg_dsn)
     try:
         chats = ChatRepository(conn)
         chats.initialize()
@@ -117,11 +117,11 @@ def test_code_tool_deletes_existing_workspace_file_without_pending_operation(tmp
         conn.close()
 
 
-def test_code_tool_delete_syncs_file_table_for_workspace_file(tmp_path: Path) -> None:
+def test_code_tool_delete_syncs_file_table_for_workspace_file(tmp_path: Path, pg_dsn: str) -> None:
     workspace = tmp_path / "workspace"
     owner_dir = workspace / "alice"
     owner_dir.mkdir(parents=True)
-    conn = connect(tmp_path / "test.db")
+    conn = connect(pg_dsn)
     try:
         chats = ChatRepository(conn)
         chats.initialize()
@@ -154,10 +154,51 @@ def test_code_tool_delete_syncs_file_table_for_workspace_file(tmp_path: Path) ->
         conn.close()
 
 
-def test_code_tool_creates_pending_operation_for_unknown_command(tmp_path: Path) -> None:
+def test_code_tool_overwrite_creates_pending_operation_and_confirm_writes_file(tmp_path: Path, pg_dsn: str) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    conn = connect(tmp_path / "test.db")
+    (root / "config.txt").write_text("old-line", encoding="utf-8")
+    conn = connect(pg_dsn)
+    try:
+        chats = ChatRepository(conn)
+        chats.initialize()
+        chats.create_conversation("conv-1", "alice")
+        service = CodeExecutionService(allowed_roots=[root], default_root=root)
+        operation_service = CodeOperationService(conn, file_tool=CodeAgentFileTool(service))
+        tools = create_code_langchain_tools(
+            file_tool=CodeAgentFileTool(service),
+            owner_username="alice",
+            conversation_id="conv-1",
+            operation_service=operation_service,
+        )
+        by_name = {tool.name: tool for tool in tools}
+
+        result = by_name["code_write_text_file"].invoke(
+            {"path": "config.txt", "content": "new-line", "overwrite": True}
+        )
+
+        operations = operation_service.list_operations("alice", conversation_id="conv-1", operation_status="pending")
+        assert "status=requires_confirmation" in result
+        assert "diff_preview:" in result
+        assert "-old-line" in result
+        assert "+new-line" in result
+        # 待确认时文件不能被修改。
+        assert (root / "config.txt").read_text(encoding="utf-8") == "old-line"
+        assert operations[0].operation_type == "write_text_file"
+        assert operations[0].payload["path"] == "config.txt"
+
+        confirmed = operation_service.confirm_operation("alice", operations[0].operation_id)
+
+        assert confirmed.status == "executed"
+        assert (root / "config.txt").read_text(encoding="utf-8") == "new-line"
+    finally:
+        conn.close()
+
+
+def test_code_tool_creates_pending_operation_for_unknown_command(tmp_path: Path, pg_dsn: str) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    conn = connect(pg_dsn)
     try:
         chats = ChatRepository(conn)
         chats.initialize()

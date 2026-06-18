@@ -255,9 +255,45 @@ file=<binary>
 事件：
 
 - `event: delta`：增量文本片段，`data` 为 `{"text":"..."}`。
+- `event: usage`：模型调用 token 用量。
+- `event: tool_start`：工具开始。
+- `event: tool_end`：工具完成，包含耗时和结果预览。
+- `event: tool_error`：工具失败。
+- `event: status`：运行状态文本。
 - `event: final`：完整 `ChatMessageResponse`，包含 `conversation_id`、`answer`、`sources`、`route`、`data`。
 
-当前实现用于前端增量展示；后端仍先完成一次 Agent 调用，再将 answer 分片输出。后续可在同一接口契约下升级为真实模型 token 流。
+当前实现已接入 LangGraph `astream_events`。前端“停止”按钮会中断 SSE 请求；
+后端会将本轮 trace 标记为 `cancelled`，本轮未完成回答不会作为最终 assistant 消息落库。
+
+### POST /chat/conversations/{conversation_id}/token-limit/extend
+
+用途：当前 conversation 达到 token 上限后，用户确认继续，后端将该会话限额倍数加 1。
+
+响应：
+
+```json
+{
+  "conversation_id": "conv-id",
+  "total_tokens": 200000,
+  "base_limit": 200000,
+  "multiplier": 2,
+  "current_limit": 400000
+}
+```
+
+当发送消息时会话累计 token 已达到当前限额，后端返回 `409`：
+
+```json
+{
+  "detail": {
+    "code": "token_limit_reached",
+    "total_tokens": 200000,
+    "current_limit": 200000,
+    "base_limit": 200000,
+    "multiplier": 1
+  }
+}
+```
 
 ### GET /chat/conversations/{conversation_id}/messages
 
@@ -505,9 +541,42 @@ file=<binary>
 }
 ```
 
-## 10. 待确认 API 事项
+## 10. 管理员用户接口
 
-- 是否需要管理员创建用户接口。
+### GET /admin/users
+
+用途：管理员查询用户列表。
+
+### POST /admin/users
+
+用途：管理员创建或更新用户。
+
+请求：
+
+```json
+{
+  "username": "demo",
+  "password": "demo123",
+  "is_admin": false
+}
+```
+
+### DELETE /admin/users/{username}
+
+用途：管理员删除用户及其关联数据。不能删除当前登录的管理员自己。
+
+## 11. Agent Trace 接口
+
+### GET /agent-trace/runs
+
+用途：查询当前用户自己的 Agent 运行记录。支持 `conversation_id` 和 `limit` 查询参数。
+
+### GET /agent-trace/runs/{run_id}
+
+用途：查询某次 Agent 运行详情，包含模型 token 用量、工具事件、耗时和错误信息。
+
+## 12. 待确认 API 事项
+
 - 是否需要用户修改密码接口。
 - 是否需要知识库文档管理接口。
 - 是否需要部门共享文件接口。

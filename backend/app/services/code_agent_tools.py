@@ -77,6 +77,7 @@ class CodeAgentFileTool:
         owner_username: str = "",
         conversation_id: str = "",
         agent_name: str = "code_agent",
+        confirmed: bool = False,
     ) -> CodeExecutionResult:
         return self.service.write_text_file(
             path=path,
@@ -85,6 +86,7 @@ class CodeAgentFileTool:
             owner_username=owner_username,
             conversation_id=conversation_id,
             agent_name=agent_name,
+            confirmed=confirmed,
         )
 
     def run_python_script(
@@ -140,7 +142,10 @@ def format_code_execution_result(result: CodeExecutionResult) -> str:
             rendered_items.append(f"- {item.get('path')}{suffix}")
         lines.append("items:\n" + "\n".join(rendered_items))
 
-    if "content" in result.data:
+    if "diff_preview" in result.data:
+        # 覆盖写入确认结果：给模型回显 diff 即可，不再重复整份新文件内容。
+        lines.append("diff_preview:\n" + str(result.data["diff_preview"]))
+    elif "content" in result.data:
         lines.append("content:\n" + str(result.data["content"]))
 
     if "size" in result.data:

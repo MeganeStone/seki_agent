@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.core.request_logging import RequestLoggingMiddleware
 from app.services.task_executor import create_task_executor
 
 
@@ -34,12 +36,14 @@ def create_app() -> FastAPI:
     直接调用它得到一个干净的 app，避免依赖全局副作用。
     """
     settings = get_settings()
+    configure_logging(settings.log_level, settings.log_format)
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         debug=settings.debug,
         lifespan=lifespan,
     )
+    app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

@@ -630,3 +630,78 @@ npm run build
 ```
 
 结果：`syntax ok`。后端业务测试仍建议用户在本机普通终端修复临时目录/pycache 权限后重跑。
+
+## 本轮换机环境重建、old/ 清理、审计表与覆盖写入确认（2026-06-10）
+
+项目已从 `D:\seki\AI\Langchain\seki_agent` 搬到新机器 `C:\seki\seki_agent\seki_agent`。
+
+环境重建：
+
+- 本机原无可用 Python/Node，旧 `backend/.venv` 指向不存在的 `D:\app\Python\python.exe` 已失效。
+- 经用户确认后用 winget 安装 Python 3.12.10 和 Node.js LTS（v24.16.0），删除并重建 `backend/.venv`，重装 `backend/requirements.txt`。
+- 根目录缺失 `.env`，已按本机 `C:/seki/seki_agent/seki_agent/...` 路径重建；LangSmith key 从旧 `old/.env` 迁移；`SEKI_RAG_API_KEY`、`SEKI_WEB_SEARCH_API_KEY`、`TRANSLATE_API_KEY` 等业务 key 旧 `.env` 中没有，需要用户自行补填后才能跑真实 Agent/翻译。
+
+RAG 数据归位与配置补全：
+
+- RAG 运行数据原先只存在于 `old/`，且 `.env.example` 缺少对应目录配置，搬家后 RAG 配置链路是断的。
+- 已把 `old/tbox_docs`、`old/parent_store`、`old/tbox_vector_db` 移动到 `data/` 下。
+- `.env` 和 `.env.example` 已补 `TBOX_DOCS_DIR`、`PARENT_STORE_DIR`、`VECTOR_DB_DIR`、`EMBEDDING_MODEL` 等 legacy RAG 变量（example 用 `/app/data/...` 容器路径）。
+
+old/ 清理（逐项经用户确认）：
+
+- 已删除：`old/workspace`、`old/translate`、`old/requirements*.txt`（4 个）、`old/.env`、`old/src/users.db`、`old/src/__pycache__`。
+- 保留：`old/src`（源码对照）、`old/parse_spi`（含 backend/legacy 未收敛的多套 settings 变体）。
+
+Code Agent 新能力（详见 `docs/code-agent-design.md` 第 22 节）：
+
+- 持久化审计表 `code_audit_records` + 默认 audit sink + `GET /api/v1/code-operations/audit`。
+- 覆盖写入既有文件改为 diff 预览 + pending operation 确认；agent 本次创建的文件可直接覆盖；前端确认卡片渲染 diff。
+- `code_agent` 系统 prompt 已同步覆盖确认行为。
+
+附带修复：
+
+- `backend/tests/test_task_executor.py` 线程池翻译用例的等待循环只等 `pending`，状态进入 `running` 时会提前断言失败（竞态偶发）；已改为等待 `pending/running`。
+
+验证：
+
+```powershell
+backend\.venv\Scripts\python.exe -m pytest backend\tests -q
+cd frontend
+npm run lint
+npm run build
+```
+
+结果：后端 191 passed、5 skipped；前端 lint/build 通过。
+
+文档同步：`implementation-status.md`（审计/diff 确认移入已实现）、`file-structure.md`（新文件、data/ 与 old/ 变化）、`user-guide.md`（C 盘路径、RAG 数据目录配置、venv 搬家提示、确认卡片说明）、`code-agent-design.md`（第 22 节）。
+
+## 本轮生产化收尾与 Windows 开发方式确认（2026-06-15）
+
+本轮基于当前代码继续收尾上次任务：
+
+- 确认当前代码已接入 PostgreSQL、Redis + Celery、结构化日志、自建 Agent trace、管理员用户管理、前端停止按钮、token 实时展示和按倍数确认继续。
+- `docker-compose.yml` 为 `postgres` 和 `redis` 增加主机端口映射：`5432:5432`、`6379:6379`。这样 Windows 开发阶段可以只运行 `docker compose up -d postgres redis`，后端/前端仍在本机裸跑。
+- 用户关于“开发阶段怎么用 PostgreSQL”的疑问已明确：不需要安装 Windows 版 PostgreSQL；推荐用 Docker 提供 PostgreSQL/Redis，本机 `.env` 连接 `127.0.0.1:5432` 和 `127.0.0.1:6379`。完整部署时 Compose 内部服务使用 `postgres:5432`、`redis:6379`。
+- 已同步更新 `.env.example`、`docs/implementation-status.md`、`docs/docker-deploy.md`、`docs/user-guide.md`、`docs/api-design.md`、`docs/file-structure.md`、`backend/README.md`。
+
+本轮环境重建与验证：
+
+```powershell
+python -m venv backend\.venv
+python -m pip --python backend\.venv\Scripts\python.exe install --upgrade pip
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+cd frontend
+npm install
+npm run build
+npm run lint
+```
+
+验证结果：
+
+- 前端 `npm run build` 通过。
+- 前端 `npm run lint` 通过。
+- Python AST 解析检查通过：`backend/app`、`backend/scripts`、`backend/tests` 共 114 个 `.py` 文件可解析。
+- Docker 依赖服务启动并 healthy：`seki-agent-postgres`、`seki-agent-redis`。
+- PostgreSQL 主机端口连通：`postgresql://postgres:postgres@127.0.0.1:5432/postgres` 可 `select 1`。
+- 后端关键测试中不依赖 pytest `tmp_path` 的 43 个用例通过，覆盖 Agent trace、token 累计/限额、Chat/AgentService、结构化日志等。
+- 剩余涉及 `tmp_path` 的用例在当前 Codex Windows shell 中被 pytest 临时目录权限阻断（`PermissionError: C:\Users\user\AppData\Local\Temp\pytest-of-user` 或项目内 basetemp 扫描失败），不是业务断言失败。建议用户在普通 PowerShell 中重跑，或修复 Windows 临时目录权限后重跑。

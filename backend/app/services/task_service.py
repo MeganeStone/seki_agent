@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg
 from typing import Literal
 
 from fastapi import HTTPException, status
@@ -10,7 +10,7 @@ from app.schemas.tasks import TaskListResponse, TaskRead, TaskType
 
 
 class TaskService:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: psycopg.Connection):
         self.translation_tasks = TranslationRepository(conn)
         self.spi_tasks = SpiRepository(conn)
         self.diff_tasks = DiffRepository(conn)
@@ -55,7 +55,7 @@ class TaskService:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
     @staticmethod
-    def _to_task(row: sqlite3.Row, task_type: Literal["translation", "spi", "diff"]) -> TaskRead:
+    def _to_task(row: dict, task_type: Literal["translation", "spi", "diff"]) -> TaskRead:
         return TaskRead(
             task_id=row["task_id"],
             type=task_type,

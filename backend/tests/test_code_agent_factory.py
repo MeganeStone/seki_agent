@@ -60,7 +60,7 @@ def test_create_code_langgraph_agent_uses_restricted_tools(monkeypatch, tmp_path
     ]
 
 
-def test_create_code_langgraph_agent_passes_operation_service(monkeypatch, tmp_path: Path) -> None:
+def test_create_code_langgraph_agent_passes_operation_service(monkeypatch, tmp_path: Path, pg_dsn: str) -> None:
     captured = {}
 
     def fake_create_agent(**kwargs):
@@ -85,10 +85,9 @@ def test_create_code_langgraph_agent_passes_operation_service(monkeypatch, tmp_p
 
     root = tmp_path / "project"
     root.mkdir()
-    import sqlite3
+    from app.db.postgres import connect
 
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = connect(pg_dsn)
     operation_service = CodeOperationService(conn)
     graph = create_code_langgraph_agent(
         settings=Settings(rag_api_key="test-key"),
@@ -102,3 +101,4 @@ def test_create_code_langgraph_agent_passes_operation_service(monkeypatch, tmp_p
 
     assert graph == {"graph": "code"}
     assert [tool.name for tool in captured["tools"]][:2] == ["code_list_dir", "code_create_dir"]
+    conn.close()

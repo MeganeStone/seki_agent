@@ -1,5 +1,5 @@
 import io
-import sqlite3
+import psycopg
 import tarfile
 from pathlib import Path
 
@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_auth_service, get_diff_service, get_file_service
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.services.auth_service import AuthService
 from app.services.diff_service import DiffService
@@ -16,8 +16,8 @@ from app.services.file_service import FileService
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = connect(tmp_path / "test.db")
+def test_db(pg_dsn: str) -> psycopg.Connection:
+    conn = connect(pg_dsn)
     try:
         yield conn
     finally:
@@ -30,7 +30,7 @@ def workspace_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(test_db: sqlite3.Connection, workspace_dir: Path, tmp_path: Path) -> TestClient:
+def client(test_db: psycopg.Connection, workspace_dir: Path, tmp_path: Path) -> TestClient:
     app = create_app()
 
     def override_auth_service() -> AuthService:
@@ -58,7 +58,7 @@ def client(test_db: sqlite3.Connection, workspace_dir: Path, tmp_path: Path) -> 
     return TestClient(app)
 
 
-def auth_headers(client: TestClient, test_db: sqlite3.Connection, username: str = "alice") -> dict[str, str]:
+def auth_headers(client: TestClient, test_db: psycopg.Connection, username: str = "alice") -> dict[str, str]:
     AuthService(test_db).create_user(username, "secret")
     response = client.post("/api/v1/auth/login", json={"username": username, "password": "secret"})
     token = response.json()["access_token"]
@@ -75,7 +75,7 @@ def upload(client: TestClient, headers: dict[str, str], filename: str, content: 
     return response.json()["id"]
 
 
-def test_create_and_get_diff_task(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_create_and_get_diff_task(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     left_id = upload(client, headers, "old.tar.gz")
     right_id = upload(client, headers, "new.tar.gz")
@@ -98,7 +98,7 @@ def test_create_and_get_diff_task(client: TestClient, test_db: sqlite3.Connectio
     assert get_response.json()["task_id"] == body["task_id"]
 
 
-def test_diff_rejects_non_tar_gz(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_diff_rejects_non_tar_gz(client: TestClient, test_db: psycopg.Connection) -> None:
     headers = auth_headers(client, test_db)
     left_id = upload(client, headers, "old.zip")
     right_id = upload(client, headers, "new.tar.gz")
@@ -114,7 +114,7 @@ def test_diff_rejects_non_tar_gz(client: TestClient, test_db: sqlite3.Connection
     assert response.json()["error"] == "Only .tar.gz archives are supported"
 
 
-def test_diff_tasks_are_isolated_by_user(client: TestClient, test_db: sqlite3.Connection) -> None:
+def test_diff_tasks_are_isolated_by_user(client: TestClient, test_db: psycopg.Connection) -> None:
     alice_headers = auth_headers(client, test_db, "alice")
     bob_headers = auth_headers(client, test_db, "bob")
     left_id = upload(client, alice_headers, "old.tar.gz")

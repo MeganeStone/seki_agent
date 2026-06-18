@@ -1,4 +1,4 @@
-import type { LoginResponse } from '../types/auth'
+import type { LoginResponse, User } from '../types/auth'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://192.168.144.22:8000/api/v1'
 
@@ -28,6 +28,16 @@ export async function login(username: string, password: string): Promise<LoginRe
     throw new Error('用户名或密码错误')
   }
 
+  return response.json()
+}
+
+export async function fetchMe(accessToken: string): Promise<User> {
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load current user: ${response.status}`)
+  }
   return response.json()
 }
 

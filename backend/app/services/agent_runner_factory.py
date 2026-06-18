@@ -11,6 +11,7 @@ from app.services.agent_tools import (
 )
 from app.services.code_agent_factory import create_code_langgraph_agent
 from app.services.code_agent_tools import CodeAgentFileTool
+from app.services.code_audit_service import create_default_audit_sink
 from app.services.code_execution_service import CodeExecutionService
 from app.services.code_operation_service import CodeOperationService
 from app.services.langgraph_agent_factory import create_tbox_langgraph_agent
@@ -78,6 +79,7 @@ def _create_code_execution_service(
         default_root=user_workspace,
         writable_roots=[user_workspace],
         after_delete_path=(lambda owner, _path: file_service.sync_workspace_files(owner)) if file_service else None,
+        audit_sink=create_default_audit_sink(),
     )
 
 

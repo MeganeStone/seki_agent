@@ -21,7 +21,8 @@ class Settings(BaseSettings):
 
     project_root: Path = Path(__file__).resolve().parents[3]
     data_dir: Path = project_root / "data"
-    database_path: Path = data_dir / "db" / "seki_agent.db"
+    # PostgreSQL 连接串；本地默认连开发库，Docker/生产通过 SEKI_DATABASE_URL 覆盖。
+    database_url: str = "postgresql://postgres:postgres@127.0.0.1:5432/seki_agent"
     workspace_dir: Path = data_dir / "workspace"
     skills_dir: Path = data_dir / "skills"
     diff_work_dir: Path = data_dir / "diff_work"
@@ -40,12 +41,21 @@ class Settings(BaseSettings):
     web_search_max_summary_chars: int = 4000
     task_executor: str = "sync"
     task_executor_max_workers: int = 3
+    # Celery broker；本机开发指向 Memurai/Redis，Docker 指向 redis 服务。
+    celery_broker_url: str = "redis://127.0.0.1:6379/0"
+    # 测试/无 Redis 环境可置 true，任务在进程内同步执行。
+    celery_task_always_eager: bool = False
     code_agent_allowed_roots: list[Path] | None = None
     code_agent_max_read_bytes: int = 1024 * 1024
     code_agent_max_write_bytes: int = 1024 * 1024
     code_agent_allowed_command_prefixes: list[str] = []
     code_agent_confirmed_command_prefixes: list[str] = []
     run_live_agent_tests: bool = False
+    # 结构化日志：json 输出单行 JSON，console 为本地可读格式。
+    log_level: str = "INFO"
+    log_format: str = "json"
+    # 单个会话的 token 预算基数；达到 N 倍基数时需要用户确认才能继续，0 表示不限制。
+    max_conversation_tokens: int = 200_000
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",

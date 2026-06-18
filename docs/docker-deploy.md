@@ -35,6 +35,12 @@ docker compose up -d
 - `backend/Dockerfile`
 - `frontend/Dockerfile`
 
+Compose 会用这两个镜像文件启动应用服务，并额外启动运行依赖：
+
+- `postgres`：PostgreSQL 17，持久化卷为 `postgres_data`，同时映射主机 `5432`。
+- `redis`：Redis 7，作为 Celery broker，同时映射主机 `6379`。
+- `worker`：后端镜像启动的 Celery worker。
+
 根目录不再保留 Dockerfile，避免误用 `docker build .` 打包出错误镜像。
 
 首次启动后创建登录用户：
@@ -53,6 +59,19 @@ docker compose exec backend python -m scripts.create_user demo demo123
 
 - 前端：http://localhost:5173
 - 后端健康检查：http://localhost:8000/api/v1/health
+
+开发阶段如果想裸跑后端/前端，只启动依赖服务即可：
+
+```powershell
+docker compose up -d postgres redis
+```
+
+然后本机 `.env` 使用：
+
+```env
+SEKI_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/seki_agent"
+SEKI_CELERY_BROKER_URL="redis://127.0.0.1:6379/0"
+```
 
 ## 常用命令
 
@@ -86,11 +105,11 @@ docker compose up -d
 
 包括：
 
-- SQLite 数据库
+- PostgreSQL 数据卷（由 Docker volume `postgres_data` 管理）
 - 用户上传文件
 - 翻译/SPI/diff 临时工作目录
 
-迁移到另一台电脑时，如果需要保留已有数据，复制 `data/` 目录即可。
+迁移到另一台电脑时，文件类运行数据复制 `data/` 目录；数据库需要用 `pg_dump` / `pg_restore` 或复制 Docker volume，不再是单个 SQLite 文件。
 
 ## 环境变量
 

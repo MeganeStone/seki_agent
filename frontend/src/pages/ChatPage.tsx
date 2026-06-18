@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
+  TokenLimitReachedError,
   createConversation,
   deleteConversation,
+  extendTokenLimit,
   listChatMessages,
   listConversations,
   sendChatMessage,
@@ -107,7 +109,13 @@ function pendingOperationFromData(data: Record<string, unknown> | null): CodeOpe
 function operationLabel(operationType: string): string {
   if (operationType === 'delete_path') return '删除文件/目录'
   if (operationType === 'run_allowed_command') return '执行命令'
+  if (operationType === 'write_text_file') return '覆盖写入文件'
   return operationType
+}
+
+function operationDiffPreview(operation: CodeOperation): string | null {
+  const diff = operation.payload.diff_preview
+  return typeof diff === 'string' && diff ? diff : null
 }
 
 function operationTarget(operation: CodeOperation): string | null {
@@ -140,6 +148,9 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
   const [activeToolTurnId, setActiveToolTurnId] = useState('')
   const [activeOperationId, setActiveOperationId] = useState('')
   const [error, setError] = useState('')
+  // 本轮/本会话 token 用量，由 SSE usage 事件和 final 响应更新。
+  const [tokenStats, setTokenStats] = useState<{ turn: number; total: number; limit: number } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const canSend = useMemo(() => Boolean(accessToken && message.trim() && !loading), [
     accessToken,
@@ -218,6 +229,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
       setConversationId(nextConversationId)
       window.localStorage.setItem(conversationStorageKey, nextConversationId)
       setTurns(messagesToTurns(messages))
+      setTokenStats(null)
       await refreshConversationList()
     } catch (error) {
       setError(error instanceof Error ? error.message : '会话历史加载失败')
@@ -238,76 +250,85 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
     return created.conversation_id
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!accessToken || !message.trim()) return
+  function applyFinalTokenUsage(data: Record<string, unknown> | null | undefined) {
+    const usage = data && typeof data === 'object' ? (data as Record<string, unknown>)['token_usage'] : null
+    if (!usage || typeof usage !== 'object') return
+    const record = usage as Record<string, unknown>
+    setTokenStats({
+      turn: Number(record.turn_tokens ?? 0),
+      total: Number(record.conversation_total_tokens ?? 0),
+      limit: Number(record.current_limit ?? 0),
+    })
+  }
 
-    const userMessage = message.trim()
-    setMessage('')
-    setError('')
-    setLoading(true)
+  async function performTurn(userMessage: string, activeConversationId: string): Promise<void> {
+    if (!accessToken) throw new Error('请先登录')
+    const assistantTurnId = createClientId()
     setTurns((current) => [
       ...current,
-      { id: createClientId(), role: 'user', content: userMessage },
+      {
+        id: assistantTurnId,
+        role: 'assistant',
+        content: '',
+        route: 'streaming',
+      },
     ])
+    setTokenStats((current) => (current ? { ...current, turn: 0 } : null))
+
+    const payload = {
+      message: userMessage,
+      use_knowledge_base: useKnowledgeBase,
+    }
+    let receivedStreamContent = false
+    const abortController = new AbortController()
+    abortRef.current = abortController
+
+    const upsertAssistantTurn = (updater: (turn: ChatTurn) => ChatTurn) => {
+      setTurns((current) =>
+        current.map((turn) => (turn.id === assistantTurnId ? updater(turn) : turn)),
+      )
+    }
+
+    const removeAssistantTurn = () => {
+      setTurns((current) => current.filter((turn) => turn.id !== assistantTurnId))
+    }
+
+    const upsertToolEvent = (
+      toolCallId: string | null,
+      toolName: string,
+      patch: Partial<AgentToolEvent>,
+    ) => {
+      const eventId = toolCallId ?? `${toolName}-${Date.now()}`
+      upsertAssistantTurn((turn) => {
+        const existing = turn.toolEvents ?? []
+        const index = existing.findIndex((item) => item.id === eventId)
+        if (index >= 0) {
+          const next = [...existing]
+          next[index] = { ...next[index], ...patch }
+          return { ...turn, toolEvents: next }
+        }
+        return {
+          ...turn,
+          toolEvents: [
+            ...existing,
+            {
+              id: eventId,
+              toolName,
+              status: 'running',
+              ...patch,
+            },
+          ],
+        }
+      })
+    }
 
     try {
-      const activeConversationId = await ensureConversation()
-      const assistantTurnId = createClientId()
-      setTurns((current) => [
-        ...current,
+      // 优先走 SSE。若浏览器/代理不支持或后端流失败，再回退到普通 POST。
+      await streamChatMessage(
+        accessToken,
+        activeConversationId,
+        payload,
         {
-          id: assistantTurnId,
-          role: 'assistant',
-          content: '',
-          route: 'streaming',
-        },
-      ])
-
-      const payload = {
-        message: userMessage,
-        use_knowledge_base: useKnowledgeBase,
-      }
-      let receivedStreamContent = false
-
-      const upsertAssistantTurn = (updater: (turn: ChatTurn) => ChatTurn) => {
-        setTurns((current) =>
-          current.map((turn) => (turn.id === assistantTurnId ? updater(turn) : turn)),
-        )
-      }
-
-      const upsertToolEvent = (
-        toolCallId: string | null,
-        toolName: string,
-        patch: Partial<AgentToolEvent>,
-      ) => {
-        const eventId = toolCallId ?? `${toolName}-${Date.now()}`
-        upsertAssistantTurn((turn) => {
-          const existing = turn.toolEvents ?? []
-          const index = existing.findIndex((item) => item.id === eventId)
-          if (index >= 0) {
-            const next = [...existing]
-            next[index] = { ...next[index], ...patch }
-            return { ...turn, toolEvents: next }
-          }
-          return {
-            ...turn,
-            toolEvents: [
-              ...existing,
-              {
-                id: eventId,
-                toolName,
-                status: 'running',
-                ...patch,
-              },
-            ],
-          }
-        })
-      }
-
-      try {
-        // 优先走 SSE。若浏览器/代理不支持或后端流失败，再回退到普通 POST。
-        await streamChatMessage(accessToken, activeConversationId, payload, {
           onDelta: (text) => {
             receivedStreamContent = true
             upsertAssistantTurn((turn) => ({ ...turn, content: `${turn.content}${text}` }))
@@ -344,6 +365,13 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
               statusText: `${toolName} 失败`,
             }))
           },
+          onUsage: ({ inputTokens, outputTokens }) => {
+            setTokenStats((current) => ({
+              turn: (current?.turn ?? 0) + inputTokens + outputTokens,
+              total: current?.total ?? 0,
+              limit: current?.limit ?? 0,
+            }))
+          },
           onFinal: (response) => {
             upsertAssistantTurn((turn) => ({
               ...turn,
@@ -354,27 +382,89 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
               pendingOperation: pendingOperationFromData(response.data),
               statusText: null,
             }))
+            applyFinalTokenUsage(response.data)
           },
-        })
-      } catch (streamError) {
-        if (receivedStreamContent) {
-          throw streamError
+        },
+        abortController.signal,
+      )
+    } catch (streamError) {
+      if (abortController.signal.aborted) {
+        // 用户点击“停止”：保留已输出的部分内容，标记为已停止，本轮不落库。
+        upsertAssistantTurn((turn) => ({
+          ...turn,
+          statusText: '已手动停止',
+          route: 'stopped',
+        }))
+        return
+      }
+      if (streamError instanceof TokenLimitReachedError) {
+        removeAssistantTurn()
+        throw streamError
+      }
+      if (receivedStreamContent) {
+        throw streamError
+      }
+      const response = await sendChatMessage(accessToken, activeConversationId, payload)
+      setTurns((current) =>
+        current.map((turn) =>
+          turn.id === assistantTurnId
+            ? {
+                ...turn,
+                content: response.answer,
+                sources: response.sources,
+                route: response.route,
+                data: response.data,
+                pendingOperation: pendingOperationFromData(response.data),
+              }
+            : turn,
+        ),
+      )
+      applyFinalTokenUsage(response.data)
+    } finally {
+      if (abortRef.current === abortController) {
+        abortRef.current = null
+      }
+    }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort()
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!accessToken || !message.trim()) return
+
+    const userMessage = message.trim()
+    setMessage('')
+    setError('')
+    setLoading(true)
+    setTurns((current) => [
+      ...current,
+      { id: createClientId(), role: 'user', content: userMessage },
+    ])
+
+    try {
+      const activeConversationId = await ensureConversation()
+      try {
+        await performTurn(userMessage, activeConversationId)
+      } catch (turnError) {
+        if (turnError instanceof TokenLimitReachedError) {
+          const info = turnError.info
+          const nextLimit = info.base_limit * (info.multiplier + 1)
+          const shouldContinue = window.confirm(
+            `本次对话已消耗 ${info.total_tokens} tokens，达到当前上限 ${info.current_limit}。` +
+              `是否继续对话？继续后上限将提高到 ${nextLimit}。`,
+          )
+          if (!shouldContinue) {
+            setError('已达到本次对话 token 上限，本条消息未发送。')
+            return
+          }
+          await extendTokenLimit(accessToken, activeConversationId)
+          await performTurn(userMessage, activeConversationId)
+        } else {
+          throw turnError
         }
-        const response = await sendChatMessage(accessToken, activeConversationId, payload)
-        setTurns((current) =>
-          current.map((turn) =>
-            turn.id === assistantTurnId
-              ? {
-                  ...turn,
-                  content: response.answer,
-                  sources: response.sources,
-                  route: response.route,
-                  data: response.data,
-                  pendingOperation: pendingOperationFromData(response.data),
-                }
-              : turn,
-          ),
-        )
       }
       await refreshConversationList()
     } catch (error) {
@@ -389,6 +479,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
     setTurns([])
     setMessage('')
     setError('')
+    setTokenStats(null)
     window.localStorage.removeItem(conversationStorageKey)
   }
 
@@ -680,6 +771,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
           const operationBusy = pendingOperation?.operation_id === activeOperationId
           const operationResultMessage = pendingOperation?.result?.message ?? null
           const operationTargetText = pendingOperation ? operationTarget(pendingOperation) : null
+          const operationDiffText = pendingOperation ? operationDiffPreview(pendingOperation) : null
 
           return (
             <article className={`chat-turn ${turn.role}`} key={turn.id}>
@@ -758,6 +850,7 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
                     <span className={`status-badge ${pendingOperation.status}`}>{pendingOperation.status}</span>
                   </div>
                   {operationTargetText && <p>目标：{operationTargetText}</p>}
+                  {operationDiffText && <pre className="diff-preview">{operationDiffText}</pre>}
                   <p>确认后会由后端继续执行，并把结果写回当前对话。</p>
                   {operationResultMessage && <p>结果：{operationResultMessage}</p>}
                   {pendingOperation.status === 'pending' && (
@@ -805,9 +898,23 @@ function ChatPage({ accessToken, username }: ChatPageProps) {
             placeholder="输入问题、业务查询或代码任务..."
             rows={3}
           />
-          <button type="submit" disabled={!canSend}>
-            {loading ? '发送中' : '发送'}
-          </button>
+          {tokenStats && (
+            <p className="token-stats">
+              本次对话已消耗 {tokenStats.total.toLocaleString()} tokens
+              {tokenStats.turn > 0 ? `（本轮 ${tokenStats.turn.toLocaleString()}）` : ''}
+              {tokenStats.limit > 0 ? ` / 上限 ${tokenStats.limit.toLocaleString()}` : ''}
+            </p>
+          )}
+          <div className="chat-send-actions">
+            <button type="submit" disabled={!canSend}>
+              {loading ? '发送中' : '发送'}
+            </button>
+            {loading && (
+              <button type="button" className="secondary" onClick={handleStop}>
+                停止
+              </button>
+            )}
+          </div>
         </form>
       </div>
     </section>

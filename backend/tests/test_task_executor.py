@@ -4,7 +4,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.db.sqlite import connect
+from app.db.postgres import connect
 from app.main import create_app
 from app.services.file_service import FileService
 from app.services.task_executor import SynchronousTaskExecutor, TaskFn, ThreadPoolTaskExecutor, create_task_executor
@@ -50,8 +50,8 @@ def test_app_lifespan_uses_configured_thread_pool_executor(monkeypatch) -> None:
         assert isinstance(client.app.state.task_executor, ThreadPoolTaskExecutor)
 
 
-def test_translation_service_can_defer_task_execution(tmp_path: Path) -> None:
-    conn = connect(tmp_path / "test.db")
+def test_translation_service_can_defer_task_execution(tmp_path: Path, pg_dsn: str) -> None:
+    conn = connect(pg_dsn)
     try:
         file_service = FileService(conn, workspace_dir=tmp_path / "workspace")
         source = file_service.save_generated_content("alice", "demo.docx", b"source")
@@ -86,8 +86,8 @@ def test_translation_service_can_defer_task_execution(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_cancelled_deferred_translation_does_not_run(tmp_path: Path) -> None:
-    conn = connect(tmp_path / "test.db")
+def test_cancelled_deferred_translation_does_not_run(tmp_path: Path, pg_dsn: str) -> None:
+    conn = connect(pg_dsn)
     try:
         file_service = FileService(conn, workspace_dir=tmp_path / "workspace")
         source = file_service.save_generated_content("alice", "demo.docx", b"source")
@@ -122,9 +122,9 @@ def test_cancelled_deferred_translation_does_not_run(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_translation_service_runs_with_thread_pool_executor(tmp_path: Path) -> None:
-    db_path = tmp_path / "test.db"
-    conn = connect(db_path)
+def test_translation_service_runs_with_thread_pool_executor(tmp_path: Path, pg_dsn: str) -> None:
+
+    conn = connect(pg_dsn)
     executor = ThreadPoolTaskExecutor(max_workers=1)
     try:
         file_service = FileService(conn, workspace_dir=tmp_path / "workspace")
@@ -142,7 +142,7 @@ def test_translation_service_runs_with_thread_pool_executor(tmp_path: Path) -> N
             translation_work_dir=tmp_path / "translation_work",
             translator=fake_translator,
             task_executor=executor,
-            db_path=db_path,
+            database_url=pg_dsn,
         )
 
         created = service.create_task("alice", source.id, "英语")
@@ -150,7 +150,7 @@ def test_translation_service_runs_with_thread_pool_executor(tmp_path: Path) -> N
 
         deadline = time.monotonic() + 5
         completed = service.get_task("alice", created.task_id)
-        while completed.status == "pending" and time.monotonic() < deadline:
+        while completed.status in {"pending", "running"} and time.monotonic() < deadline:
             time.sleep(0.05)
             completed = service.get_task("alice", created.task_id)
 

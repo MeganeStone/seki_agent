@@ -36,7 +36,7 @@ def create_app() -> FastAPI:
     直接调用它得到一个干净的 app，避免依赖全局副作用。
     """
     settings = get_settings()
-    configure_logging(settings.log_level, settings.log_format)
+    configure_logging(settings.log_level, settings.log_format, settings.log_dir)
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,

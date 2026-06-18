@@ -125,6 +125,31 @@ The project also has a built-in trace store in PostgreSQL. Each chat turn
 creates an `agent_trace_runs` row; model usage and tool calls are stored in
 `agent_trace_events` and can be viewed from the frontend Trace page.
 
+## Logging
+
+Logs are written to `SEKI_LOG_DIR` (default `data/logs/`), isolated by
+business domain with size-based rotation (50MB per file, 10 backups):
+
+```text
+logs/
+├── access.log      ← HTTP request logs (seki.request)
+├── app.log         ← Main business logs (agent, task, auth, admin, etc.)
+├── audit.log       ← Security audit logs (code agent ops, user management)
+├── trace.log       ← Agent trace logs (seki.trace)
+└── error.log       ← Copy of all ERROR-level logs (quick issue triage)
+```
+
+All log records automatically include the current user's username (extracted
+from the Authorization header) for multi-user scenarios.
+
+Configure format and level via environment variables:
+
+```env
+SEKI_LOG_FORMAT=json      # json (single-line JSON) or console (human-readable)
+SEKI_LOG_LEVEL=INFO       # standard Python log level
+SEKI_LOG_DIR=/app/data/logs
+```
+
 Health check:
 
 ```text

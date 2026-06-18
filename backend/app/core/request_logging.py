@@ -3,7 +3,25 @@ import logging
 import time
 from uuid import uuid4
 
+from app.core.context import current_user_var
+from app.core.security import decode_access_token
+
 logger = logging.getLogger("seki.request")
+
+
+def _extract_verified_user_from_auth_header(headers: list[tuple[bytes, bytes]]) -> str:
+    """从 Bearer token 中提取已验签且未过期的用户名，仅用于访问日志。"""
+    for key, value in headers:
+        if key.lower() != b"authorization":
+            continue
+        raw = value.decode("ascii", errors="replace")
+        if not raw.startswith("Bearer "):
+            return ""
+        payload = decode_access_token(raw[7:])
+        if payload is None:
+            return ""
+        return str(payload.get("sub") or "")
+    return ""
 
 
 class RequestLoggingMiddleware:
@@ -19,11 +37,14 @@ class RequestLoggingMiddleware:
         start = time.perf_counter()
         status_holder = {"status": 0}
 
+        username = _extract_verified_user_from_auth_header(scope.get("headers", []))
+        token = current_user_var.set(username)
+
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
-                headers = message.setdefault("headers", [])
-                headers.append((b"x-request-id", request_id.encode("ascii")))
+                hdrs = message.setdefault("headers", [])
+                hdrs.append((b"x-request-id", request_id.encode("ascii")))
             await send(message)
 
         try:
@@ -42,3 +63,4 @@ class RequestLoggingMiddleware:
                     "client_ip": client[0],
                 },
             )
+            current_user_var.reset(token)

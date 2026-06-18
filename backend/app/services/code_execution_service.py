@@ -3,12 +3,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
+import logging
 import subprocess
 import sys
 import shutil
 from uuid import uuid4
 
 from app.core.config import get_settings
+
+logger = logging.getLogger("seki.audit")
 
 
 @dataclass(frozen=True)
@@ -889,6 +892,20 @@ class CodeExecutionService:
                 self.audit_sink(record, data)
             except Exception:
                 pass
+        # 同时写入 audit.log 文件日志，便于快速检索安全审计记录。
+        logger.info(
+            "code_agent_operation",
+            extra={
+                "operation_id": operation_id,
+                "tool_name": tool_name,
+                "status": status,
+                "target": target,
+                "message": message,
+                "owner_username": owner_username,
+                "conversation_id": conversation_id,
+                "agent_name": agent_name,
+            },
+        )
         return CodeExecutionResult(status=status, message=message, data=payload)
 
     def _after_delete_path(self, owner_username: str, resolved: Path) -> None:

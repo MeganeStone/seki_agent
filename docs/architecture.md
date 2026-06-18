@@ -84,7 +84,7 @@ Agent Tools  --->  Agent Tool Layer  --->  services/files|translation|spi|diff|r
 - 工程化：将旧 Agent 中散落在 Streamlit、闭包变量和本地脚本里的能力，收敛为 FastAPI router、service、repository、tool adapter 和 runner 边界；运行配置统一进入 `.env` 和 `settings`；用户、文件、任务和会话状态落库或落到明确存储。
 - 可测试：service 层用 fake 文件、fake LLM、fake parser/translator 测试业务规则；tool adapter 用 fake service 测试参数映射；Agent runner 用 fake graph/fake model 测试工具选择和返回解析；默认测试不依赖真实 API key、LangSmith 或外网。
 - 可替换：`AgentRunner` 可以从 rule runner 切换到 LangGraph runner；web search 可以从禁用态 service 替换为真实 provider；任务执行器可以从同步执行替换为线程池、Celery 或 RQ；RAG answerer 可以 mock 或替换为新检索链，而不改上层 API。
-- 可观测：保留 LangSmith 作为真实 Agent 调试追踪手段，但不能把 LangSmith 作为单元测试通过的前提；单元测试负责确定性验证，LangSmith 负责线上/联调链路诊断。
+- 可观测：保留 LangSmith 作为真实 Agent 调试追踪手段，但不能把 LangSmith 作为单元测试通过的前提；单元测试负责确定性验证，LangSmith 负责线上/联调链路诊断。日志按业务隔离到不同文件（access/app/audit/trace/error），按大小轮转（50MB/文件，保留 10 个备份），多进程安全，自动注入当前用户名，支持 JSON 结构化输出便于采集。
 
 ## 4. 后端目录结构建议
 

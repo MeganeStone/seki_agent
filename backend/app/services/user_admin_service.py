@@ -13,7 +13,7 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.auth import AdminUserRead
 from app.services.auth_service import AuthService
 
-logger = logging.getLogger("seki.admin")
+logger = logging.getLogger("seki.audit")
 
 # 删除用户时按 owner_username 清理的业务表。
 _OWNED_TABLES = [

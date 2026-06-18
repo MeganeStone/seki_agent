@@ -23,6 +23,8 @@
 ### backend/app/core
 
 - `config.py`：集中读取环境变量，形成 `Settings`。
+- `logging.py`：结构化日志配置，按业务隔离到不同文件（access/app/audit/trace/error），按大小轮转（50MB/文件，保留 10 个备份），自动注入当前用户名。
+- `context.py`：请求级上下文变量（ContextVar），用于在中间件和日志之间传递当前用户信息。
 - `security.py`：密码哈希、JWT 创建和解析。
 - `api_keys.py`：临时环境变量上下文，供 legacy 调用时复用统一配置。
 
@@ -170,6 +172,12 @@
 - `tbox_docs/`：RAG 知识库源文档（本地维护者管理）。
 - `parent_store/`：RAG 父文档存储。
 - `tbox_vector_db/`：Chroma 向量库。
+- `logs/`：按业务隔离的日志文件，每天轮转保留 30 天。
+  - `access.log`：HTTP 请求日志（`seki.request`）。
+  - `app.log`：业务主日志（agent、task、auth、admin 等）。
+  - `audit.log`：安全审计日志（code agent 操作、用户管理）。
+  - `trace.log`：Agent 运行追踪日志（`seki.trace`）。
+  - `error.log`：所有 ERROR 级别日志的副本（快速定位问题）。
 
 PostgreSQL 数据不再是 `data/db/*.db` 文件；Docker Compose 默认使用
 `postgres_data` volume 保存数据库。`data/` 仍保存用户文件、任务工作目录和

@@ -14,7 +14,7 @@ from app.core.logging import configure_logging
 
 def create_celery_app() -> Celery:
     settings = get_settings()
-    configure_logging(settings.log_level, settings.log_format)
+    configure_logging(settings.log_level, settings.log_format, settings.log_dir)
     app = Celery("seki_agent", broker=settings.celery_broker_url)
     app.conf.update(
         task_serializer="json",

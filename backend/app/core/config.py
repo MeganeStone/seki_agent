@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     # 结构化日志：json 输出单行 JSON，console 为本地可读格式。
     log_level: str = "INFO"
     log_format: str = "json"
+    log_dir: Path = data_dir / "logs"
     # 单个会话的 token 预算基数；达到 N 倍基数时需要用户确认才能继续，0 表示不限制。
     max_conversation_tokens: int = 200_000
     cors_origins: list[str] = [

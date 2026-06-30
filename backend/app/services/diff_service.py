@@ -159,9 +159,14 @@ class DiffService:
             diff_bin = "\n".join(difflib.unified_diff(left_bin, right_bin, fromfile=left_name, tofile=right_name, lineterm=""))
             diff_lib = "\n".join(difflib.unified_diff(left_lib, right_lib, fromfile=left_name, tofile=right_name, lineterm=""))
 
+            left_syms = self._parse_symbols(left_dir / "sym_size.txt")
+            right_syms = self._parse_symbols(right_dir / "sym_size.txt")
+            diff_sym = self._diff_symbols(left_syms, right_syms, left_name, right_name)
+
             parts = []
             parts.append("=== bin_size.txt diff ===\n" + diff_bin if diff_bin else "bin_size.txt no diff")
             parts.append("=== lib_size.txt diff ===\n" + diff_lib if diff_lib else "lib_size.txt no diff")
+            parts.append("=== symbol diff ===\n" + diff_sym if diff_sym else "symbol no diff")
             return "\n\n".join(parts)
         finally:
             shutil.rmtree(work_root, ignore_errors=True)
@@ -169,10 +174,15 @@ class DiffService:
     def _run_legacy_scripts(self, target_dir: Path) -> None:
         bin_script = self.legacy_src_dir / "bin_srcdiff.sh"
         lib_script = self.legacy_src_dir / "lib_srcdiff.sh"
+        sym_script = self.legacy_src_dir / "sym_srcdiff.sh"
         if not bin_script.exists() or not lib_script.exists():
             raise RuntimeError("Missing bin_srcdiff.sh or lib_srcdiff.sh")
 
-        for script in (bin_script, lib_script):
+        scripts_to_run = [bin_script, lib_script]
+        if sym_script.exists():
+            scripts_to_run.append(sym_script)
+
+        for script in scripts_to_run:
             copied = target_dir / script.name
             shutil.copy2(script, copied)
             copied.chmod(copied.stat().st_mode | stat.S_IEXEC)
@@ -181,9 +191,9 @@ class DiffService:
         if not shell:
             raise RuntimeError("bash or sh is required to run legacy diff scripts")
 
-        for script_name in ("bin_srcdiff.sh", "lib_srcdiff.sh"):
+        for script in scripts_to_run:
             proc = subprocess.run(
-                [shell, f"./{script_name}"],
+                [shell, f"./{script.name}"],
                 cwd=target_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -192,7 +202,7 @@ class DiffService:
             )
             if proc.returncode != 0:
                 raise RuntimeError(
-                    f"Legacy diff script failed: {script_name}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+                    f"Legacy diff script failed: {script.name}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
                 )
 
     @staticmethod
@@ -219,16 +229,79 @@ class DiffService:
         return path.read_text(encoding="utf-8", errors="ignore").splitlines()
 
     @staticmethod
+    def _parse_symbols(path: Path) -> dict[str, dict[str, int]]:
+        """Parse sym_size.txt into {binary_name: {symbol_name: size_in_bytes}}."""
+        result: dict[str, dict[str, int]] = {}
+        if not path.exists():
+            return result
+        current_binary: str | None = None
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("# "):
+                current_binary = line[2:].strip()
+                result.setdefault(current_binary, {})
+                continue
+            if current_binary is None:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                symbol_name = parts[0]
+                try:
+                    size = int(parts[1], 16)
+                except ValueError:
+                    continue
+                result[current_binary][symbol_name] = size
+        return result
+
+    @staticmethod
+    def _diff_symbols(
+        left: dict[str, dict[str, int]],
+        right: dict[str, dict[str, int]],
+        left_name: str,
+        right_name: str,
+    ) -> str:
+        """Compare symbols between two versions, returning only changed symbols."""
+        all_binaries = sorted(set(left.keys()) | set(right.keys()))
+        sections: list[str] = []
+        for binary in all_binaries:
+            left_syms = left.get(binary, {})
+            right_syms = right.get(binary, {})
+            all_symbols = sorted(set(left_syms.keys()) | set(right_syms.keys()))
+            changes: list[str] = []
+            for sym in all_symbols:
+                old_size = left_syms.get(sym)
+                new_size = right_syms.get(sym)
+                if old_size == new_size:
+                    continue
+                if old_size is None:
+                    changes.append(f"  + {sym}: (new, size={new_size})")
+                elif new_size is None:
+                    changes.append(f"  - {sym}: (removed, was size={old_size})")
+                else:
+                    delta = new_size - old_size
+                    sign = "+" if delta > 0 else ""
+                    changes.append(f"  ~ {sym}: {old_size} -> {new_size} ({sign}{delta})")
+            if changes:
+                sections.append(f"[{binary}]\n" + "\n".join(changes))
+        if not sections:
+            return ""
+        return "\n\n".join(sections)
+
+    @staticmethod
     def _to_schema(row: dict) -> DiffTaskRead:
         result_text = row["result_text"]
         bin_changed = bool(result_text and "=== bin_size.txt diff ===" in result_text)
         lib_changed = bool(result_text and "=== lib_size.txt diff ===" in result_text)
+        symbol_changed = bool(result_text and "=== symbol diff ===" in result_text)
         summary = None
         if row["status"] == "succeeded":
             summary = DiffSummary(
-                changed=bin_changed or lib_changed,
+                changed=bin_changed or lib_changed or symbol_changed,
                 bin_changed=bin_changed,
                 lib_changed=lib_changed,
+                symbol_changed=symbol_changed,
             )
         return DiffTaskRead(
             task_id=row["task_id"],

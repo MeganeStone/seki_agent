@@ -97,6 +97,13 @@
 - Agent 对话页实时展示本轮/本会话 token 用量；达到 `SEKI_MAX_CONVERSATION_TOKENS * multiplier` 时后端返回 409，前端弹窗确认后调用扩容接口，下一档为 2 倍、3 倍，以此类推。
 - Agent 对话页支持手动停止当前 SSE 请求；客户端断开时后端将 trace run 标记为 `cancelled`，本轮不落库最终 assistant 消息。
 - 已接入结构化日志配置：`SEKI_LOG_FORMAT=json|console`、`SEKI_LOG_LEVEL=...`。
+- 日志按业务隔离到不同文件（`data/logs/`），按大小轮转（50MB/文件，保留 10 个备份），多进程安全：
+  - `access.log`：HTTP 请求日志（`seki.request`）。
+  - `app.log`：业务主日志（agent、task、auth、admin 等）。
+  - `audit.log`：安全审计日志（code agent 操作、用户管理）。
+  - `trace.log`：Agent 运行追踪日志（`seki.trace`）。
+  - `error.log`：所有 ERROR 级别日志的副本（快速定位问题）。
+- 所有日志记录自动注入当前用户名（从 Authorization header 提取），便于多用户场景下区分请求来源。
 - 推荐使用 LangSmith 原生环境变量追踪 LangChain/LangGraph 链路：
   - `LANGSMITH_TRACING=true`
   - `LANGSMITH_API_KEY=...`

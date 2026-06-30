@@ -12,6 +12,7 @@ class DiffSummary(BaseModel):
     changed: bool
     bin_changed: bool
     lib_changed: bool
+    symbol_changed: bool = False
 
 
 class DiffTaskRead(BaseModel):

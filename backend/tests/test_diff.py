@@ -89,7 +89,7 @@ def test_create_and_get_diff_task(client: TestClient, test_db: psycopg.Connectio
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "succeeded"
-    assert body["summary"] == {"changed": True, "bin_changed": True, "lib_changed": False}
+    assert body["summary"] == {"changed": True, "bin_changed": True, "lib_changed": False, "symbol_changed": False}
     assert body["result_file_id"]
     assert "bin_size.txt diff" in body["result_text"]
 
@@ -148,4 +148,115 @@ def test_safe_extract_rejects_path_traversal(tmp_path: Path) -> None:
 
     assert exc_info.value.status_code == 400
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_parse_symbols(tmp_path: Path) -> None:
+    sym_file = tmp_path / "sym_size.txt"
+    sym_file.write_text(
+        "# app1\n"
+        "main 0x100\n"
+        "helper 0x50\n"
+        "\n"
+        "# app2\n"
+        "init 0x200\n"
+    )
+    result = DiffService._parse_symbols(sym_file)
+    assert result == {
+        "app1": {"main": 256, "helper": 80},
+        "app2": {"init": 512},
+    }
+
+
+def test_parse_symbols_empty_file(tmp_path: Path) -> None:
+    sym_file = tmp_path / "sym_size.txt"
+    sym_file.write_text("")
+    assert DiffService._parse_symbols(sym_file) == {}
+
+
+def test_parse_symbols_missing_file(tmp_path: Path) -> None:
+    assert DiffService._parse_symbols(tmp_path / "nonexistent.txt") == {}
+
+
+def test_diff_symbols_size_changed() -> None:
+    left = {"app1": {"main": 100, "helper": 50}}
+    right = {"app1": {"main": 120, "helper": 50}}
+    result = DiffService._diff_symbols(left, right, "old.tar.gz", "new.tar.gz")
+    assert "[app1]" in result
+    assert "main" in result
+    assert "100 -> 120" in result
+    assert "+20" in result
+    assert "helper" not in result
+
+
+def test_diff_symbols_added_removed() -> None:
+    left = {"app1": {"old_func": 100}}
+    right = {"app1": {"new_func": 200}}
+    result = DiffService._diff_symbols(left, right, "old.tar.gz", "new.tar.gz")
+    assert "old_func" in result
+    assert "removed" in result
+    assert "new_func" in result
+    assert "new" in result
+
+
+def test_diff_symbols_no_change() -> None:
+    left = {"app1": {"main": 100}}
+    right = {"app1": {"main": 100}}
+    result = DiffService._diff_symbols(left, right, "old.tar.gz", "new.tar.gz")
+    assert result == ""
+
+
+def test_diff_symbols_new_binary() -> None:
+    left: dict[str, dict[str, int]] = {}
+    right = {"new_app": {"init": 300}}
+    result = DiffService._diff_symbols(left, right, "old.tar.gz", "new.tar.gz")
+    assert "[new_app]" in result
+    assert "init" in result
+    assert "new" in result
+
+
+def test_diff_summary_includes_symbol_changed(client: TestClient, test_db: psycopg.Connection, tmp_path: Path) -> None:
+    app = create_app()
+
+    def override_auth_service() -> AuthService:
+        return AuthService(test_db)
+
+    def override_file_service() -> FileService:
+        return FileService(test_db, workspace_dir=tmp_path / "workspace")
+
+    def override_diff_service() -> DiffService:
+        file_service = FileService(test_db, workspace_dir=tmp_path / "workspace")
+
+        def fake_compare_with_symbols(left_path: Path, right_path: Path, left_name: str, right_name: str, task_id: str) -> str:
+            return (
+                f"=== bin_size.txt diff ===\n--- {left_name}\n+++ {right_name}\n- app 1\n+ app 2\n\n"
+                "lib_size.txt no diff\n\n"
+                "=== symbol diff ===\n[app]\n  ~ main: 100 -> 120 (+20)"
+            )
+
+        return DiffService(
+            test_db,
+            file_service=file_service,
+            diff_work_dir=tmp_path / "diff_work",
+            comparator=fake_compare_with_symbols,
+        )
+
+    app.dependency_overrides[get_auth_service] = override_auth_service
+    app.dependency_overrides[get_file_service] = override_file_service
+    app.dependency_overrides[get_diff_service] = override_diff_service
+    c = TestClient(app)
+
+    headers = auth_headers(c, test_db)
+    left_id = upload(c, headers, "old.tar.gz")
+    right_id = upload(c, headers, "new.tar.gz")
+
+    response = c.post(
+        "/api/v1/diff/tasks",
+        headers=headers,
+        json={"left_file_id": left_id, "right_file_id": right_id},
+    )
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["summary"]["symbol_changed"] is True
+    assert body["summary"]["changed"] is True
+    assert "symbol diff" in body["result_text"]
 

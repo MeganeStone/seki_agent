@@ -21,6 +21,28 @@ TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY")
 _client = None
 _translation_cache = {}
 
+
+def _looks_already_japanese(text: str) -> bool:
+    """
+    判断一段文本是否"已经是日语、无需再翻译"。
+
+    修复要点（原 bug）：
+      旧逻辑 `re.search(r"[\u3040-\u30ff]", text)` 只要出现该范围内任意字符就跳过，
+      但该范围包含当标点用的 ・(U+30FB 中点) 和 ー(U+30FC 长音符)，
+      导致「・USB升级...」这类以中点起头、实则全是中文的段落被整段跳过 → 漏翻。
+
+    新逻辑（偏向"宁可重译，不可漏翻"）：
+      1. 只要文本仍含 CJK 汉字，就无法可靠区分中/日，一律送去翻译（返回 False）；
+         代价是已是日语的汉字句会被重译一次（temperature 低时基本原样返回，安全）。
+      2. 不含汉字、但含"真正的"平假名/片假名（排除 ・ ー 等标点）时，
+         才认定已是日语并跳过。
+    """
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return False
+    # 真正的假名：平假名 U+3041-3096、片假名 U+30A1-30FA（刻意排除 ・U+30FB、ー U+30FC 等）
+    return bool(re.search(r"[\u3041-\u3096\u30a1-\u30fa]", text))
+
+
 def _is_valid_translation(translation: str | None, target_lang: str) -> bool:
     if not translation or not translation.strip():
         return False
@@ -63,7 +85,8 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
         return text
     # 基础过滤
     text = re.sub(r"请提供需要翻译的原文内容.*", "", text)
-    if target_lang == "日语" and re.search(r"[\u3040-\u30ff]", text):
+    # 修复：不再"只要含假名就跳过"，改为更稳健的判断（详见 _looks_already_japanese）
+    if target_lang == "日语" and _looks_already_japanese(text):
         return text
     company_names = (
         "上海畅星", "上海暢星",
@@ -100,7 +123,8 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
     3. 连贯要求：需参考当前页已翻译的段落保持术语、语气、格式统一：
        {translated_context if translated_context else '暂无已翻译段落'}
     4. 术语要求：{context['term_requirements']}；
-    5. 输出要求：只输出翻译结果，无任何解释、说明或额外文字。
+    5. 格式要求：保留原文中的换行、编号、项目符号（如「・」）、括号等结构，仅翻译文字内容；
+    6. 输出要求：只输出翻译结果，无任何解释、说明或额外文字。
     """
     
     # 用户提示：明确待翻译文本

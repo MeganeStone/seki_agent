@@ -73,10 +73,14 @@ def _collect_tasks(doc):
             original = ''.join(t_node.text for t_node in t_nodes if t_node.text).strip()
             if not original or len(original) <= 1:
                 continue
+            # 修复要点：原代码把整句译文写进每一个 <w:t> 节点，
+            #          当一个段落有多个 run(<w:t>) 时会导致译文重复 N 次。
+            #          正确做法：译文只写入第一个节点，其余节点清空。
             def setter_textbox(nodes=t_nodes, trans_text=None):
-                if trans_text:
-                    for node in nodes:
-                        node.text = trans_text
+                if trans_text and nodes:
+                    nodes[0].text = trans_text
+                    for node in nodes[1:]:
+                        node.text = ""
             tasks.append((setter_textbox, original))
 
     return tasks

@@ -900,7 +900,7 @@ class CodeExecutionService:
                 "tool_name": tool_name,
                 "status": status,
                 "target": target,
-                "message": message,
+                "audit_message": message,
                 "owner_username": owner_username,
                 "conversation_id": conversation_id,
                 "agent_name": agent_name,

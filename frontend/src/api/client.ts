@@ -1,6 +1,6 @@
 import type { LoginResponse, User } from '../types/auth'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://192.168.144.22:8000/api/v1'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://192.168.52.72:8000/api/v1'
 
 export type HealthResponse = {
   status: string
